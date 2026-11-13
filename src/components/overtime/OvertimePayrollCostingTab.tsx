@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { useERP } from '../../context/ERPContext';
 import { 
   ArrowRightLeft, 
@@ -17,13 +17,10 @@ import {
 export const OvertimePayrollCostingTab: React.FC = () => {
   const { 
     overtimeRequests, 
-    monthlyPayrollRuns, 
     productionOrders, 
     getProductionCostBreakdown,
     overtimeAuditLogs 
   } = useERP();
-
-  const [selectedMonth, setSelectedMonth] = useState('2026-10');
 
   // Approved overtime requests
   const approvedRequests = overtimeRequests.filter(r => r.status === 'Final Approved');
@@ -139,7 +136,7 @@ export const OvertimePayrollCostingTab: React.FC = () => {
                   <div>
                     <div className="font-semibold text-slate-800 flex items-center gap-2">
                       <span>{req.employeeName}</span>
-                      <span className="font-mono text-[10px] bg-slate-100 px-1 py-0.5 rounded text-slate-600">{req.employeeId}</span>
+                      <span className="font-mono text-[10px] bg-slate-100 px-1 py-0.5 rounded text-slate-600">{req.employeeCode || req.employeeId}</span>
                     </div>
                     <div className="text-slate-500 text-[11px] mt-0.5">
                       {req.overtimeDate} • {(req.actualOvertimeHours || req.expectedHours || 0).toFixed(1)} hrs @ ৳{(req.hourlyRateBDT || 0).toFixed(0)}/h

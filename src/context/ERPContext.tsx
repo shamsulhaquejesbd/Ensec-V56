@@ -4067,6 +4067,207 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  const refreshOvertimeData = async () => {
+    const sb = getSupabase();
+    if (!sb) return;
+
+    try {
+      const [reqRes, allocRes, attRes, polRes, audRes, legacyRes] = await Promise.all([
+        sb.from('overtime_requests').select('*').order('created_at', { ascending: false }),
+        sb.from('overtime_batch_allocations').select('*').order('created_at', { ascending: true }),
+        sb.from('overtime_attendances').select('*').order('date', { ascending: false }),
+        sb.from('overtime_policies').select('*').order('created_at', { ascending: true }),
+        sb.from('overtime_audit_logs').select('*').order('timestamp', { ascending: false }).limit(250),
+        sb.from('employee_overtimes').select('*').order('date', { ascending: false }),
+      ]);
+
+      const allocByRequest = new Map<string, OvertimeBatchAllocation[]>();
+      if (!allocRes.error && Array.isArray(allocRes.data)) {
+        allocRes.data.forEach((a: any) => {
+          const list = allocByRequest.get(String(a.request_id)) || [];
+          list.push({
+            id: String(a.id),
+            productionOrderId: a.production_order_id || '',
+            productionOrderNumber: a.production_order_number || '',
+            productionBatchNumber: a.production_batch_number || '',
+            productId: a.product_id || undefined,
+            productName: a.product_name || '',
+            processType: (a.process_type || 'Spot Welding & Busbar') as any,
+            allocatedHours: Number(a.allocated_hours) || 0,
+            hourlyRateBDT: Number(a.hourly_rate_bdt) || 0,
+            allocatedCostBDT: Number(a.allocated_cost_bdt) || 0,
+            isOverhead: Boolean(a.is_overhead),
+            notes: a.notes || undefined,
+          });
+          allocByRequest.set(String(a.request_id), list);
+        });
+      }
+
+      if (!reqRes.error && Array.isArray(reqRes.data)) {
+        const mappedReqs: OvertimeRequest[] = reqRes.data.map((r: any) => ({
+          id: String(r.id),
+          requestNumber: r.request_number,
+          employeeId: String(r.employee_id),
+          employeeCode: r.employee_code || '',
+          employeeName: r.employee_name || '',
+          department: r.department || '',
+          designation: r.designation || '',
+          employeeCategory: r.employee_category || undefined,
+          overtimeDate: String(r.overtime_date),
+          purposeCategory: r.purpose_category || 'Direct Production',
+          productionOrderId: r.production_order_id || undefined,
+          productionOrderNumber: r.production_order_number || undefined,
+          productionBatchNumber: r.production_batch_number || undefined,
+          productName: r.product_name || undefined,
+          projectPurpose: r.project_purpose || '',
+          expectedStartTime: r.expected_start_time || '18:00',
+          expectedEndTime: r.expected_end_time || '22:00',
+          expectedHours: Number(r.expected_hours) || 0,
+          overtimeReason: r.overtime_reason || '',
+          requestedBy: r.requested_by || '',
+          requestedAt: r.requested_at || r.created_at || new Date().toISOString(),
+          status: r.status || 'Pending Supervisor',
+          supervisorId: r.supervisor_id || undefined,
+          supervisorName: r.supervisor_name || undefined,
+          supervisorApprovedAt: r.supervisor_approved_at || undefined,
+          supervisorRemarks: r.supervisor_remarks || undefined,
+          productionManagerId: r.production_manager_id || undefined,
+          productionManagerName: r.production_manager_name || undefined,
+          productionApprovedAt: r.production_approved_at || undefined,
+          productionRemarks: r.production_remarks || undefined,
+          hrVerifierId: r.hr_verifier_id || undefined,
+          hrVerifierName: r.hr_verifier_name || undefined,
+          hrVerifiedAt: r.hr_verified_at || undefined,
+          hrRemarks: r.hr_remarks || undefined,
+          finalApproverId: r.final_approver_id || undefined,
+          finalApproverName: r.final_approver_name || undefined,
+          finalApprovedAt: r.final_approved_at || undefined,
+          finalRemarks: r.final_remarks || undefined,
+          rejectionReason: r.rejection_reason || undefined,
+          rejectedBy: r.rejected_by || undefined,
+          rejectedAt: r.rejected_at || undefined,
+          attendanceId: r.attendance_id || undefined,
+          actualOvertimeHours:
+            r.actual_overtime_hours !== null && r.actual_overtime_hours !== undefined
+              ? Number(r.actual_overtime_hours)
+              : undefined,
+          basicSalaryBDT: Number(r.basic_salary_bdt) || 0,
+          hourlyRateBDT: Number(r.hourly_rate_bdt) || 0,
+          overtimeMultiplier: Number(r.overtime_multiplier) || 2.0,
+          calculatedOvertimeAmountBDT: Number(r.calculated_overtime_amount_bdt) || 0,
+          batchAllocations: allocByRequest.get(String(r.id)) || [],
+          isPayrollProcessed: Boolean(r.is_payroll_processed),
+          payrollRunId: r.payroll_run_id || undefined,
+          payrollMonth: r.payroll_month || undefined,
+          isCostingAllocated: Boolean(r.is_costing_allocated),
+          costingAllocationBatch: r.costing_allocation_batch || undefined,
+          createdAt: r.created_at || new Date().toISOString(),
+          updatedAt: r.updated_at || undefined,
+        }));
+        setOvertimeRequests(mappedReqs);
+      }
+
+      if (!attRes.error && Array.isArray(attRes.data)) {
+        const mappedAtts: OvertimeAttendance[] = attRes.data.map((a: any) => ({
+          id: String(a.id),
+          requestId: a.request_id || undefined,
+          requestNumber: a.request_number || undefined,
+          employeeId: String(a.employee_id),
+          employeeCode: a.employee_code || '',
+          employeeName: a.employee_name || '',
+          department: a.department || '',
+          designation: a.designation || '',
+          date: String(a.date),
+          normalCheckInTime: a.normal_check_in_time || '09:00',
+          normalCheckOutTime: a.normal_check_out_time || '18:00',
+          overtimeCheckInTime: a.overtime_check_in_time || '18:30',
+          overtimeCheckOutTime: a.overtime_check_out_time || '22:30',
+          isOvernight: Boolean(a.is_overnight),
+          breakDurationMinutes: Number(a.break_duration_minutes) || 0,
+          rawCalculatedHours: Number(a.raw_calculated_hours) || 0,
+          actualOvertimeHours: Number(a.actual_overtime_hours) || 0,
+          verifiedBy: a.verified_by || undefined,
+          verificationDate: a.verification_date || undefined,
+          isVerified: Boolean(a.is_verified),
+          verificationRemarks: a.verification_remarks || undefined,
+          isLateCheckOutAlert: Boolean(a.is_late_check_out_alert),
+          isMissingCheckOutAlert: Boolean(a.is_missing_check_out_alert),
+          isDuplicateEntryAlert: Boolean(a.is_duplicate_entry_alert),
+          biometricDeviceId: a.biometric_device_id || undefined,
+          rawBiometricPunchId: a.raw_biometric_punch_id || undefined,
+          syncSource: (a.sync_source || 'Manual') as any,
+          notes: a.notes || undefined,
+          createdAt: a.created_at || new Date().toISOString(),
+          updatedAt: a.updated_at || undefined,
+        }));
+        setOvertimeAttendances(mappedAtts);
+      }
+
+      if (!polRes.error && Array.isArray(polRes.data) && polRes.data.length > 0) {
+        const mappedPolicies: OvertimePolicyConfig[] = polRes.data.map((p: any) => ({
+          id: String(p.id),
+          policyName: p.policy_name || 'Standard Policy',
+          isDefault: Boolean(p.is_default),
+          department: p.department || 'All Departments',
+          standardWorkingDaysPerMonth: Number(p.standard_working_days_per_month) || 26,
+          standardDailyWorkingHours: Number(p.standard_daily_working_hours) || 8,
+          standardMonthlyWorkingHours: Number(p.standard_monthly_working_hours) || 208,
+          wageBasis: (p.wage_basis || 'BASIC_ONLY') as any,
+          overtimeMultiplierRegular: Number(p.overtime_multiplier_regular) || 2.0,
+          overtimeMultiplierWeekend: Number(p.overtime_multiplier_weekend) || 2.0,
+          overtimeMultiplierHoliday: Number(p.overtime_multiplier_holiday) || 2.5,
+          overtimeMultiplierNightShift: Number(p.overtime_multiplier_night_shift) || 2.2,
+          minimumOtMinutesThreshold: Number(p.minimum_ot_minutes_threshold) || 30,
+          maxOtHoursPerDay: Number(p.max_ot_hours_per_day) || 4.0,
+          maxOtHoursPerMonth: Number(p.max_ot_hours_per_month) || 60.0,
+          allowOvernightOvertime: p.allow_overnight_overtime !== false,
+          requireSupervisorPreApproval: p.require_supervisor_pre_approval !== false,
+          updatedBy: p.updated_by || undefined,
+          updatedAt: p.updated_at || undefined,
+        }));
+        setOvertimePolicies(mappedPolicies);
+      }
+
+      if (!audRes.error && Array.isArray(audRes.data)) {
+        const mappedAudit: OvertimeAuditTrail[] = audRes.data.map((l: any) => ({
+          id: String(l.id),
+          recordId: String(l.record_id),
+          recordType: l.record_type,
+          action: l.action,
+          actorId: l.actor_id || undefined,
+          actorName: l.actor_name,
+          actorRole: l.actor_role,
+          timestamp: l.timestamp || new Date().toISOString(),
+          details: l.details,
+          previousState: l.previous_state || undefined,
+          newState: l.new_state || undefined,
+        }));
+        setOvertimeAuditLogs(mappedAudit);
+      }
+
+      if (!legacyRes.error && Array.isArray(legacyRes.data)) {
+        const mappedLegacy: OvertimeRecord[] = legacyRes.data.map((o: any) => ({
+          id: String(o.id),
+          fieldForceId: o.employee_id ? String(o.employee_id) : undefined,
+          employeeId: String(o.employee_id),
+          employeeCode: o.employee_code || '',
+          employeeName: o.employee_name || '',
+          date: String(o.date),
+          monthYear: o.month_year || String(o.date).slice(0, 7),
+          hours: Number(o.hours) || 0,
+          ratePerHourBDT: Number(o.rate_per_hour_bdt) || 0,
+          totalAmountBDT: Number(o.total_amount_bdt) || 0,
+          reason: o.reason || '',
+          status: (o.status || 'Pending') as any,
+          approvedBy: o.approved_by || undefined,
+        }));
+        setOvertimeRecords(mappedLegacy);
+      }
+    } catch (err) {
+      console.warn('Supabase refreshOvertimeData notice:', err);
+    }
+  };
+
   const clearFieldForceLocalData = () => {
     if (typeof window !== 'undefined') {
       try {
@@ -5464,6 +5665,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       refreshFieldForce(),
       refreshOfficeLocations(),
       refreshAttendanceData(),
+      refreshOvertimeData(),
       refreshOffers(),
       refreshSalesOrders(),
       refreshCRMAgreements(),
@@ -17957,10 +18159,30 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const addOvertimeRecord = (ot: Omit<OvertimeRecord, 'id' | 'status'>): string => {
-    const id = `ot-${Date.now().toString().slice(-6)}`;
+    const id = `ot-${Date.now().toString().slice(-6)}-${Math.random().toString(36).substring(2, 5)}`;
     const newOt: OvertimeRecord = { ...ot, id, status: 'Pending' };
     setOvertimeRecords((prev) => [newOt, ...prev]);
     addAuditLog('OVERTIME_LOGGED', 'HR & Payroll', `Overtime logged for ${ot.employeeName}: ${ot.hours} hrs @ ৳${ot.ratePerHourBDT}/hr`);
+    const sb = getSupabase();
+    if (sb) {
+      sb.from('employee_overtimes')
+        .upsert({
+          id: newOt.id,
+          employee_id: String(newOt.employeeId || newOt.fieldForceId || ''),
+          employee_code: newOt.employeeCode || '',
+          employee_name: newOt.employeeName,
+          date: newOt.date,
+          month_year: newOt.monthYear || String(newOt.date).slice(0, 7),
+          hours: Number(newOt.hours) || 0,
+          rate_per_hour_bdt: Number(newOt.ratePerHourBDT) || 0,
+          total_amount_bdt: Number(newOt.totalAmountBDT) || 0,
+          reason: newOt.reason || '',
+          status: 'Pending',
+        })
+        .then(({ error }) => {
+          if (error) console.warn('Supabase employee_overtimes insert failed:', error.message);
+        });
+    }
     return id;
   };
 
@@ -17969,17 +18191,35 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       prev.map((o) => (o.id === id ? { ...o, status: 'Approved', approvedBy } : o))
     );
     addAuditLog('OVERTIME_APPROVED', 'HR & Payroll', `Approved overtime ${id} by ${approvedBy}`);
+    const sb = getSupabase();
+    if (sb) {
+      sb.from('employee_overtimes')
+        .update({ status: 'Approved', approved_by: approvedBy })
+        .eq('id', id)
+        .then(({ error }) => {
+          if (error) console.warn('Supabase employee_overtimes approve failed:', error.message);
+        });
+    }
   };
 
   const rejectOvertimeRecord = (id: string, reason: string) => {
     setOvertimeRecords((prev) =>
       prev.map((o) => (o.id === id ? { ...o, status: 'Rejected' } : o))
     );
-    addAuditLog('OVERTIME_REJECTED', 'HR & Payroll', `Rejected overtime ${id}`);
+    addAuditLog('OVERTIME_REJECTED', 'HR & Payroll', `Rejected overtime ${id}: ${reason || 'N/A'}`);
+    const sb = getSupabase();
+    if (sb) {
+      sb.from('employee_overtimes')
+        .update({ status: 'Rejected' })
+        .eq('id', id)
+        .then(({ error }) => {
+          if (error) console.warn('Supabase employee_overtimes reject failed:', error.message);
+        });
+    }
   };
 
   // --------------------------------------------------------------------------
-  // Complete Overtime Management Module Implementation
+  // Complete Overtime Management Module Implementation (with Supabase Sync)
   // --------------------------------------------------------------------------
   const addOvertimeAuditLog = (log: Omit<OvertimeAuditTrail, 'id' | 'timestamp'>) => {
     const newLog: OvertimeAuditTrail = {
@@ -17988,6 +18228,26 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       timestamp: new Date().toISOString(),
     };
     setOvertimeAuditLogs((prev) => [newLog, ...prev]);
+    const sb = getSupabase();
+    if (sb) {
+      sb.from('overtime_audit_logs')
+        .insert({
+          id: newLog.id,
+          record_id: newLog.recordId,
+          record_type: newLog.recordType,
+          action: newLog.action,
+          actor_id: newLog.actorId || currentUser?.id || null,
+          actor_name: newLog.actorName,
+          actor_role: newLog.actorRole,
+          timestamp: newLog.timestamp,
+          details: newLog.details,
+          previous_state: newLog.previousState || null,
+          new_state: newLog.newState || null,
+        })
+        .then(({ error }) => {
+          if (error) console.warn('Supabase overtime_audit_logs insert failed:', error.message);
+        });
+    }
   };
 
   const getEmployeeEffectiveOvertimePolicy = (employeeId: string, forDate?: string): EmployeeOvertimePolicy => {
@@ -18106,27 +18366,33 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const createOvertimeRequest = (req: Partial<OvertimeRequest>): OvertimeRequest => {
-    const count = overtimeRequests.length + 1;
-    const reqNum = `OTR-2026-${String(count).padStart(3, '0')}`;
+    const existingMax = overtimeRequests.reduce((max, r) => {
+      const m = String(r.requestNumber || '').match(/(\d+)$/);
+      const num = m ? parseInt(m[1], 10) : 0;
+      return num > max ? num : max;
+    }, 0);
+    const nextSeq = Math.max(existingMax + 1, overtimeRequests.length + 1);
+    const reqNum = `OTR-${new Date().getFullYear()}-${String(nextSeq).padStart(3, '0')}`;
     const id = `otr-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
-    
+
     // Look up employee from Field Force Master
     const emp = fieldForceReps.find((r) => r.id === req.employeeId || r.code === req.employeeCode);
     const str = salaryStructures.find((s) => s.employeeId === req.employeeId || s.employeeId === emp?.id);
     const basic = str ? str.basicSalaryBDT : (emp?.basicSalaryBDT || 25000);
     const gross = str ? str.grossSalaryBDT : (emp?.basicSalaryBDT ? emp.basicSalaryBDT * 1.6 : 40000);
-    
+
     // Retrieve employee's assigned individual overtime policy for the overtime date
     const otDate = req.overtimeDate || new Date().toISOString().substring(0, 10);
     const policy = getEmployeeEffectiveOvertimePolicy(req.employeeId || emp?.id || '', otDate);
-    
+
     // Calculate according to individual employee's policy
     const expHours = req.expectedHours || calculateNetOvertimeHours(req.expectedStartTime || '18:00', req.expectedEndTime || '22:00', 0);
     const calc = calculateEmployeeIndividualOvertime(basic, policy, expHours);
-    
+
     const hourly = calc.hourlyRate;
     const mult = calc.multiplier;
     const calcAmt = calc.totalAmountBDT;
+    const nowIso = new Date().toISOString();
 
     const newRequest: OvertimeRequest = {
       id,
@@ -18149,7 +18415,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       expectedHours: expHours,
       overtimeReason: req.overtimeReason || 'Urgent production order fulfillment',
       requestedBy: req.requestedBy || currentUser.name,
-      requestedAt: new Date().toISOString(),
+      requestedAt: nowIso,
       status: 'Pending Supervisor',
       basicSalaryBDT: basic,
       grossSalaryBDT: gross,
@@ -18159,11 +18425,74 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       batchAllocations: req.batchAllocations || [],
       isPayrollProcessed: false,
       isCostingAllocated: false,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      createdAt: nowIso,
+      updatedAt: nowIso,
     };
 
     setOvertimeRequests((prev) => [newRequest, ...prev]);
+
+    const sb = getSupabase();
+    if (sb) {
+      sb.from('overtime_requests')
+        .upsert({
+          id: newRequest.id,
+          request_number: newRequest.requestNumber,
+          employee_id: newRequest.employeeId,
+          employee_code: newRequest.employeeCode,
+          employee_name: newRequest.employeeName,
+          department: newRequest.department,
+          designation: newRequest.designation,
+          employee_category: newRequest.employeeCategory || 'Factory Employee',
+          overtime_date: newRequest.overtimeDate,
+          purpose_category: newRequest.purposeCategory,
+          production_order_id: newRequest.productionOrderId || null,
+          production_order_number: newRequest.productionOrderNumber || null,
+          production_batch_number: newRequest.productionBatchNumber || null,
+          product_name: newRequest.productName || null,
+          project_purpose: newRequest.projectPurpose,
+          expected_start_time: newRequest.expectedStartTime,
+          expected_end_time: newRequest.expectedEndTime,
+          expected_hours: newRequest.expectedHours,
+          overtime_reason: newRequest.overtimeReason,
+          requested_by: newRequest.requestedBy,
+          requested_at: newRequest.requestedAt,
+          status: newRequest.status,
+          basic_salary_bdt: newRequest.basicSalaryBDT || 0,
+          hourly_rate_bdt: newRequest.hourlyRateBDT || 0,
+          overtime_multiplier: newRequest.overtimeMultiplier || 2.0,
+          calculated_overtime_amount_bdt: newRequest.calculatedOvertimeAmountBDT || 0,
+          is_payroll_processed: false,
+          is_costing_allocated: false,
+          created_at: newRequest.createdAt,
+          updated_at: newRequest.updatedAt,
+        })
+        .then(async ({ error }) => {
+          if (error) {
+            console.warn('Supabase overtime_requests insert failed:', error.message);
+            return;
+          }
+          if (newRequest.batchAllocations.length > 0) {
+            await sb.from('overtime_batch_allocations').insert(
+              newRequest.batchAllocations.map((a) => ({
+                id: a.id,
+                request_id: newRequest.id,
+                production_order_id: a.productionOrderId || null,
+                production_order_number: a.productionOrderNumber,
+                production_batch_number: a.productionBatchNumber,
+                product_id: a.productId || null,
+                product_name: a.productName,
+                process_type: a.processType,
+                allocated_hours: Number(a.allocatedHours) || 0,
+                hourly_rate_bdt: Number(a.hourlyRateBDT) || 0,
+                allocated_cost_bdt: Number(a.allocatedCostBDT) || 0,
+                is_overhead: Boolean(a.isOverhead),
+                notes: a.notes || null,
+              }))
+            );
+          }
+        });
+    }
+
     addOvertimeAuditLog({
       recordId: id,
       recordType: 'REQUEST',
@@ -18178,23 +18507,35 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateOvertimeRequest = (id: string, updates: Partial<OvertimeRequest>) => {
+    const target = overtimeRequests.find((r) => r.id === id);
+    if (!target) return;
+    const nowIso = new Date().toISOString();
     setOvertimeRequests((prev) =>
-      prev.map((r) => {
-        if (r.id === id) {
-          const updated = { ...r, ...updates, updatedAt: new Date().toISOString() };
-          addOvertimeAuditLog({
-            recordId: id,
-            recordType: 'REQUEST',
-            action: 'UPDATED',
-            actorName: currentUser.name,
-            actorRole: currentUser.role,
-            details: `Updated overtime request ${r.requestNumber}`,
-          });
-          return updated;
-        }
-        return r;
-      })
+      prev.map((r) => (r.id === id ? { ...r, ...updates, updatedAt: nowIso } : r))
     );
+    const sb = getSupabase();
+    if (sb) {
+      const dbPatch: any = { updated_at: nowIso };
+      if (updates.status !== undefined) dbPatch.status = updates.status;
+      if (updates.actualOvertimeHours !== undefined) dbPatch.actual_overtime_hours = updates.actualOvertimeHours;
+      if (updates.calculatedOvertimeAmountBDT !== undefined) dbPatch.calculated_overtime_amount_bdt = updates.calculatedOvertimeAmountBDT;
+      if (updates.overtimeReason !== undefined) dbPatch.overtime_reason = updates.overtimeReason;
+      if (updates.projectPurpose !== undefined) dbPatch.project_purpose = updates.projectPurpose;
+      if (updates.isPayrollProcessed !== undefined) dbPatch.is_payroll_processed = updates.isPayrollProcessed;
+      if (updates.payrollRunId !== undefined) dbPatch.payroll_run_id = updates.payrollRunId;
+      if (updates.payrollMonth !== undefined) dbPatch.payroll_month = updates.payrollMonth;
+      sb.from('overtime_requests').update(dbPatch).eq('id', id).then(({ error }) => {
+        if (error) console.warn('Supabase overtime_requests update failed:', error.message);
+      });
+    }
+    addOvertimeAuditLog({
+      recordId: id,
+      recordType: 'REQUEST',
+      action: 'UPDATED',
+      actorName: currentUser.name,
+      actorRole: currentUser.role,
+      details: `Updated overtime request ${target.requestNumber}`,
+    });
   };
 
   const deleteOvertimeRequest = (id: string) => {
@@ -18205,6 +18546,12 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return;
     }
     setOvertimeRequests((prev) => prev.filter((r) => r.id !== id));
+    const sb = getSupabase();
+    if (sb) {
+      sb.from('overtime_requests').delete().eq('id', id).then(({ error }) => {
+        if (error) console.warn('Supabase overtime_requests delete failed:', error.message);
+      });
+    }
     addOvertimeAuditLog({
       recordId: id,
       recordType: 'REQUEST',
@@ -18221,113 +18568,157 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     step: 'SUPERVISOR' | 'PRODUCTION' | 'HR' | 'FINAL',
     remarks?: string
   ) => {
-    setOvertimeRequests((prev) =>
-      prev.map((r) => {
-        if (r.id !== id) return r;
-        const now = new Date().toISOString();
-        let nextStatus = r.status;
-        let actionDesc = '';
+    const target = overtimeRequests.find((r) => r.id === id);
+    if (!target) return;
+    const prevStatus = target.status;
+    const now = new Date().toISOString();
+    let nextStatus = target.status;
+    let actionDesc = '';
+    const dbPatch: any = { updated_at: now };
+    let updatedReq: OvertimeRequest = { ...target, updatedAt: now };
 
-        if (step === 'SUPERVISOR') {
-          nextStatus = 'Supervisor Approved';
-          actionDesc = 'Supervisor Approval (Step 1)';
-          r = {
-            ...r,
-            status: nextStatus,
-            supervisorId: currentUser.id,
-            supervisorName: currentUser.name,
-            supervisorApprovedAt: now,
-            supervisorRemarks: remarks || 'Supervisor reviewed and approved',
-            updatedAt: now,
-          };
-        } else if (step === 'PRODUCTION') {
-          nextStatus = 'Production Approved';
-          actionDesc = 'Production Manager Approval (Step 2)';
-          r = {
-            ...r,
-            status: nextStatus,
-            productionManagerId: currentUser.id,
-            productionManagerName: currentUser.name,
-            productionApprovedAt: now,
-            productionRemarks: remarks || 'Production schedule confirmed',
-            updatedAt: now,
-          };
-        } else if (step === 'HR') {
-          nextStatus = 'HR Verified';
-          actionDesc = 'HR/Accounts Wage Verification (Step 3)';
-          r = {
-            ...r,
-            status: nextStatus,
-            hrVerifierId: currentUser.id,
-            hrVerifierName: currentUser.name,
-            hrVerifiedAt: now,
-            hrRemarks: remarks || 'Wage calculation and labor policy verified',
-            updatedAt: now,
-          };
-        } else if (step === 'FINAL') {
-          nextStatus = 'Final Approved';
-          actionDesc = 'Executive Final Approval (Step 4)';
-          r = {
-            ...r,
-            status: nextStatus,
-            finalApproverId: currentUser.id,
-            finalApproverName: currentUser.name,
-            finalApprovedAt: now,
-            finalRemarks: remarks || 'Final executive approval granted',
-            updatedAt: now,
-          };
-        }
+    if (step === 'SUPERVISOR') {
+      nextStatus = 'Supervisor Approved';
+      actionDesc = 'Supervisor Approval (Step 1)';
+      updatedReq = {
+        ...updatedReq,
+        status: nextStatus,
+        supervisorId: currentUser.id,
+        supervisorName: currentUser.name,
+        supervisorApprovedAt: now,
+        supervisorRemarks: remarks || 'Supervisor reviewed and approved',
+      };
+      dbPatch.status = nextStatus;
+      dbPatch.supervisor_id = currentUser.id;
+      dbPatch.supervisor_name = currentUser.name;
+      dbPatch.supervisor_approved_at = now;
+      dbPatch.supervisor_remarks = updatedReq.supervisorRemarks;
+    } else if (step === 'PRODUCTION') {
+      nextStatus = 'Production Approved';
+      actionDesc = 'Production Manager Approval (Step 2)';
+      updatedReq = {
+        ...updatedReq,
+        status: nextStatus,
+        productionManagerId: currentUser.id,
+        productionManagerName: currentUser.name,
+        productionApprovedAt: now,
+        productionRemarks: remarks || 'Production schedule confirmed',
+      };
+      dbPatch.status = nextStatus;
+      dbPatch.production_manager_id = currentUser.id;
+      dbPatch.production_manager_name = currentUser.name;
+      dbPatch.production_approved_at = now;
+      dbPatch.production_remarks = updatedReq.productionRemarks;
+    } else if (step === 'HR') {
+      nextStatus = 'HR Verified';
+      actionDesc = 'HR/Accounts Wage Verification (Step 3)';
+      updatedReq = {
+        ...updatedReq,
+        status: nextStatus,
+        hrVerifierId: currentUser.id,
+        hrVerifierName: currentUser.name,
+        hrVerifiedAt: now,
+        hrRemarks: remarks || 'Wage calculation and labor policy verified',
+      };
+      dbPatch.status = nextStatus;
+      dbPatch.hr_verifier_id = currentUser.id;
+      dbPatch.hr_verifier_name = currentUser.name;
+      dbPatch.hr_verified_at = now;
+      dbPatch.hr_remarks = updatedReq.hrRemarks;
+    } else if (step === 'FINAL') {
+      nextStatus = 'Final Approved';
+      actionDesc = 'Executive Final Approval (Step 4)';
+      updatedReq = {
+        ...updatedReq,
+        status: nextStatus,
+        finalApproverId: currentUser.id,
+        finalApproverName: currentUser.name,
+        finalApprovedAt: now,
+        finalRemarks: remarks || 'Final executive approval granted',
+      };
+      dbPatch.status = nextStatus;
+      dbPatch.final_approver_id = currentUser.id;
+      dbPatch.final_approver_name = currentUser.name;
+      dbPatch.final_approved_at = now;
+      dbPatch.final_remarks = updatedReq.finalRemarks;
+    }
 
-        addOvertimeAuditLog({
-          recordId: id,
-          recordType: 'REQUEST',
-          action: actionDesc,
-          actorName: currentUser.name,
-          actorRole: currentUser.role,
-          details: `${actionDesc} on ${r.requestNumber}. Remarks: ${remarks || 'None'}`,
-          previousState: r.status,
-          newState: nextStatus,
-        });
-        addAuditLog('OVERTIME_APPROVED_STEP', 'Overtime Hub', `${actionDesc} for ${r.requestNumber}`);
-        return r;
-      })
-    );
+    setOvertimeRequests((prev) => prev.map((r) => (r.id === id ? updatedReq : r)));
+
+    const sb = getSupabase();
+    if (sb) {
+      sb.from('overtime_requests').update(dbPatch).eq('id', id).then(({ error }) => {
+        if (error) console.warn('Supabase advanceOvertimeWorkflow failed:', error.message);
+      });
+    }
+
+    addOvertimeAuditLog({
+      recordId: id,
+      recordType: 'REQUEST',
+      action: actionDesc,
+      actorName: currentUser.name,
+      actorRole: currentUser.role,
+      details: `${actionDesc} on ${target.requestNumber}. Remarks: ${remarks || 'None'}`,
+      previousState: prevStatus,
+      newState: nextStatus,
+    });
+    addAuditLog('OVERTIME_APPROVED_STEP', 'Overtime Hub', `${actionDesc} for ${target.requestNumber}`);
   };
 
   const rejectOvertimeRequest = (id: string, reason: string) => {
+    const target = overtimeRequests.find((r) => r.id === id);
+    if (!target) return;
+    const prevStatus = target.status;
+    const now = new Date().toISOString();
+
     setOvertimeRequests((prev) =>
-      prev.map((r) => {
-        if (r.id === id) {
-          const now = new Date().toISOString();
-          addOvertimeAuditLog({
-            recordId: id,
-            recordType: 'REQUEST',
-            action: 'REJECTED',
-            actorName: currentUser.name,
-            actorRole: currentUser.role,
-            details: `Rejected overtime request ${r.requestNumber}. Reason: ${reason}`,
-            previousState: r.status,
-            newState: 'Rejected',
-          });
-          addAuditLog('OVERTIME_REJECTED', 'Overtime Hub', `Rejected OT request ${r.requestNumber}: ${reason}`);
-          return {
-            ...r,
-            status: 'Rejected',
-            rejectionReason: reason,
-            rejectedBy: currentUser.name,
-            rejectedAt: now,
-            updatedAt: now,
-          };
-        }
-        return r;
-      })
+      prev.map((r) =>
+        r.id === id
+          ? {
+              ...r,
+              status: 'Rejected',
+              rejectionReason: reason,
+              rejectedBy: currentUser.name,
+              rejectedAt: now,
+              updatedAt: now,
+            }
+          : r
+      )
     );
+
+    const sb = getSupabase();
+    if (sb) {
+      sb.from('overtime_requests')
+        .update({
+          status: 'Rejected',
+          rejection_reason: reason,
+          rejected_by: currentUser.name,
+          rejected_at: now,
+          updated_at: now,
+        })
+        .eq('id', id)
+        .then(({ error }) => {
+          if (error) console.warn('Supabase rejectOvertimeRequest failed:', error.message);
+        });
+    }
+
+    addOvertimeAuditLog({
+      recordId: id,
+      recordType: 'REQUEST',
+      action: 'REJECTED',
+      actorName: currentUser.name,
+      actorRole: currentUser.role,
+      details: `Rejected overtime request ${target.requestNumber}. Reason: ${reason}`,
+      previousState: prevStatus,
+      newState: 'Rejected',
+    });
+    addAuditLog('OVERTIME_REJECTED', 'Overtime Hub', `Rejected OT request ${target.requestNumber}: ${reason}`);
   };
 
   const recordOvertimeAttendance = (att: Partial<OvertimeAttendance>): OvertimeAttendance => {
     const id = att.id || `ot-att-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
     const emp = fieldForceReps.find((r) => r.id === att.employeeId);
-    
+
     // Check duplicate punch prevention
     const isDup = overtimeAttendances.some(
       (a) => a.id !== id && a.employeeId === att.employeeId && a.date === att.date && a.overtimeCheckInTime === att.overtimeCheckInTime
@@ -18341,6 +18732,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const missingOut = !att.overtimeCheckOutTime || att.overtimeCheckOutTime.trim() === '';
     const lateOutAlert = hours > 4.5;
+    const nowIso = new Date().toISOString();
 
     const newAttendance: OvertimeAttendance = {
       id,
@@ -18351,7 +18743,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       employeeName: att.employeeName || emp?.name || 'Staff Member',
       department: att.department || emp?.department || 'Manufacturing & Assembly',
       designation: att.designation || emp?.designation || 'Technician',
-      date: att.date || new Date().toISOString().substring(0, 10),
+      date: att.date || nowIso.substring(0, 10),
       normalCheckInTime: att.normalCheckInTime || '09:00',
       normalCheckOutTime: att.normalCheckOutTime || '18:00',
       overtimeCheckInTime: checkIn,
@@ -18371,31 +18763,86 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       rawBiometricPunchId: att.rawBiometricPunchId,
       syncSource: att.syncSource || 'Manual',
       notes: att.notes,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      createdAt: nowIso,
+      updatedAt: nowIso,
     };
 
     setOvertimeAttendances((prev) => [newAttendance, ...prev.filter((a) => a.id !== id)]);
-    
+
+    const sb = getSupabase();
+    if (sb) {
+      sb.from('overtime_attendances')
+        .upsert({
+          id: newAttendance.id,
+          request_id: newAttendance.requestId || null,
+          request_number: newAttendance.requestNumber || null,
+          employee_id: newAttendance.employeeId,
+          employee_code: newAttendance.employeeCode,
+          employee_name: newAttendance.employeeName,
+          department: newAttendance.department,
+          designation: newAttendance.designation,
+          date: newAttendance.date,
+          normal_check_in_time: newAttendance.normalCheckInTime,
+          normal_check_out_time: newAttendance.normalCheckOutTime,
+          overtime_check_in_time: newAttendance.overtimeCheckInTime,
+          overtime_check_out_time: newAttendance.overtimeCheckOutTime,
+          is_overnight: newAttendance.isOvernight,
+          break_duration_minutes: newAttendance.breakDurationMinutes,
+          raw_calculated_hours: newAttendance.rawCalculatedHours,
+          actual_overtime_hours: newAttendance.actualOvertimeHours,
+          verified_by: newAttendance.verifiedBy || null,
+          verification_date: newAttendance.verificationDate || null,
+          is_verified: newAttendance.isVerified,
+          verification_remarks: newAttendance.verificationRemarks || null,
+          is_late_check_out_alert: Boolean(newAttendance.isLateCheckOutAlert),
+          is_missing_check_out_alert: Boolean(newAttendance.isMissingCheckOutAlert),
+          is_duplicate_entry_alert: Boolean(newAttendance.isDuplicateEntryAlert),
+          biometric_device_id: newAttendance.biometricDeviceId || null,
+          raw_biometric_punch_id: newAttendance.rawBiometricPunchId || null,
+          sync_source: newAttendance.syncSource,
+          notes: newAttendance.notes || null,
+          created_at: newAttendance.createdAt,
+          updated_at: newAttendance.updatedAt,
+        })
+        .then(({ error }) => {
+          if (error) console.warn('Supabase overtime_attendances upsert failed:', error.message);
+        });
+    }
+
     // If linked to an OvertimeRequest, update the request with verified actual hours and amount
     if (att.requestId) {
-      setOvertimeRequests((prev) =>
-        prev.map((r) => {
-          if (r.id === att.requestId) {
-            const hRate = r.hourlyRateBDT || 135;
-            const mult = r.overtimeMultiplier || 2.0;
-            const tot = calculateOvertimeTotalBDT(hRate, mult, hours);
-            return {
-              ...r,
-              attendanceId: id,
-              actualOvertimeHours: hours,
-              calculatedOvertimeAmountBDT: tot,
-              updatedAt: new Date().toISOString(),
-            };
-          }
-          return r;
-        })
-      );
+      const linkedReq = overtimeRequests.find((r) => r.id === att.requestId);
+      if (linkedReq) {
+        const hRate = linkedReq.hourlyRateBDT || 135;
+        const mult = linkedReq.overtimeMultiplier || 2.0;
+        const tot = calculateOvertimeTotalBDT(hRate, mult, hours);
+        setOvertimeRequests((prev) =>
+          prev.map((r) =>
+            r.id === att.requestId
+              ? {
+                  ...r,
+                  attendanceId: id,
+                  actualOvertimeHours: hours,
+                  calculatedOvertimeAmountBDT: tot,
+                  updatedAt: nowIso,
+                }
+              : r
+          )
+        );
+        if (sb) {
+          sb.from('overtime_requests')
+            .update({
+              attendance_id: id,
+              actual_overtime_hours: hours,
+              calculated_overtime_amount_bdt: tot,
+              updated_at: nowIso,
+            })
+            .eq('id', att.requestId)
+            .then(({ error }) => {
+              if (error) console.warn('Supabase linked request update failed:', error.message);
+            });
+        }
+      }
     }
 
     addOvertimeAuditLog({
@@ -18410,88 +18857,194 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const verifyOvertimeAttendance = (id: string, verifiedActualHours?: number, remarks?: string) => {
+    const targetAtt = overtimeAttendances.find((a) => a.id === id);
+    if (!targetAtt) return;
     const now = new Date().toISOString();
+    const finalHours = verifiedActualHours !== undefined ? verifiedActualHours : targetAtt.rawCalculatedHours;
+    const verificationRemarks = remarks || 'Verified by supervisor';
+
     setOvertimeAttendances((prev) =>
-      prev.map((a) => {
-        if (a.id === id) {
-          const finalHours = verifiedActualHours !== undefined ? verifiedActualHours : a.rawCalculatedHours;
-          const updated = {
-            ...a,
-            actualOvertimeHours: finalHours,
-            isVerified: true,
-            verifiedBy: currentUser.name,
-            verificationDate: now,
-            verificationRemarks: remarks || 'Verified by supervisor',
-            updatedAt: now,
-          };
-
-          if (a.requestId) {
-            setOvertimeRequests((reqs) =>
-              reqs.map((r) => {
-                if (r.id === a.requestId) {
-                  const hRate = r.hourlyRateBDT || 135;
-                  const mult = r.overtimeMultiplier || 2.0;
-                  const tot = calculateOvertimeTotalBDT(hRate, mult, finalHours);
-                  return {
-                    ...r,
-                    actualOvertimeHours: finalHours,
-                    calculatedOvertimeAmountBDT: tot,
-                    updatedAt: now,
-                  };
-                }
-                return r;
-              })
-            );
-          }
-
-          addOvertimeAuditLog({
-            recordId: id,
-            recordType: 'ATTENDANCE',
-            action: 'VERIFIED',
-            actorName: currentUser.name,
-            actorRole: currentUser.role,
-            details: `Supervisor verified OT hours: ${finalHours} hrs for ${a.employeeName}. Remarks: ${remarks || 'None'}`,
-          });
-          return updated;
-        }
-        return a;
-      })
+      prev.map((a) =>
+        a.id === id
+          ? {
+              ...a,
+              actualOvertimeHours: finalHours,
+              isVerified: true,
+              verifiedBy: currentUser.name,
+              verificationDate: now,
+              verificationRemarks,
+              updatedAt: now,
+            }
+          : a
+      )
     );
+
+    const sb = getSupabase();
+    if (sb) {
+      sb.from('overtime_attendances')
+        .update({
+          actual_overtime_hours: finalHours,
+          is_verified: true,
+          verified_by: currentUser.name,
+          verification_date: now,
+          verification_remarks: verificationRemarks,
+          updated_at: now,
+        })
+        .eq('id', id)
+        .then(({ error }) => {
+          if (error) console.warn('Supabase verifyOvertimeAttendance failed:', error.message);
+        });
+    }
+
+    if (targetAtt.requestId) {
+      const linkedReq = overtimeRequests.find((r) => r.id === targetAtt.requestId);
+      if (linkedReq) {
+        const hRate = linkedReq.hourlyRateBDT || 135;
+        const mult = linkedReq.overtimeMultiplier || 2.0;
+        const tot = calculateOvertimeTotalBDT(hRate, mult, finalHours);
+        setOvertimeRequests((reqs) =>
+          reqs.map((r) =>
+            r.id === targetAtt.requestId
+              ? {
+                  ...r,
+                  attendanceId: id,
+                  actualOvertimeHours: finalHours,
+                  calculatedOvertimeAmountBDT: tot,
+                  updatedAt: now,
+                }
+              : r
+          )
+        );
+        if (sb) {
+          sb.from('overtime_requests')
+            .update({
+              attendance_id: id,
+              actual_overtime_hours: finalHours,
+              calculated_overtime_amount_bdt: tot,
+              updated_at: now,
+            })
+            .eq('id', targetAtt.requestId)
+            .then(({ error }) => {
+              if (error) console.warn('Supabase linked overtime_requests verify sync failed:', error.message);
+            });
+        }
+      }
+    }
+
+    addOvertimeAuditLog({
+      recordId: id,
+      recordType: 'ATTENDANCE',
+      action: 'VERIFIED',
+      actorName: currentUser.name,
+      actorRole: currentUser.role,
+      details: `Supervisor verified OT hours: ${finalHours} hrs for ${targetAtt.employeeName}. Remarks: ${remarks || 'None'}`,
+    });
   };
 
   const saveOvertimeBatchAllocations = (requestId: string, allocations: OvertimeBatchAllocation[]) => {
+    const target = overtimeRequests.find((r) => r.id === requestId);
+    if (!target) return;
+    const maxHours = target.actualOvertimeHours || target.expectedHours || 0;
+    const totalAllocated = allocations.reduce((sum, a) => sum + (Number(a.allocatedHours) || 0), 0);
+    if (totalAllocated > maxHours) {
+      console.warn(`Total allocated hours (${totalAllocated}) exceeds available overtime hours (${maxHours})`);
+    }
+    const nowIso = new Date().toISOString();
+
     setOvertimeRequests((prev) =>
-      prev.map((r) => {
-        if (r.id === requestId) {
-          const maxHours = r.actualOvertimeHours || r.expectedHours || 0;
-          const totalAllocated = allocations.reduce((sum, a) => sum + (Number(a.allocatedHours) || 0), 0);
-          if (totalAllocated > maxHours) {
-            console.warn(`Total allocated hours (${totalAllocated}) exceeds available overtime hours (${maxHours})`);
-          }
-          const updated = {
-            ...r,
-            batchAllocations: allocations,
-            updatedAt: new Date().toISOString(),
-          };
-          addOvertimeAuditLog({
-            recordId: requestId,
-            recordType: 'ALLOCATION',
-            action: 'BATCH_ALLOCATION_UPDATED',
-            actorName: currentUser.name,
-            actorRole: currentUser.role,
-            details: `Updated batch split for ${r.requestNumber} across ${allocations.length} batches (${totalAllocated} hrs)`,
-          });
-          return updated;
-        }
-        return r;
-      })
+      prev.map((r) =>
+        r.id === requestId
+          ? {
+              ...r,
+              batchAllocations: allocations,
+              isCostingAllocated: allocations.length > 0,
+              updatedAt: nowIso,
+            }
+          : r
+      )
     );
+
+    const sb = getSupabase();
+    if (sb) {
+      sb.from('overtime_batch_allocations')
+        .delete()
+        .eq('request_id', requestId)
+        .then(async ({ error: delErr }) => {
+          if (delErr) {
+            console.warn('Supabase overtime_batch_allocations delete failed:', delErr.message);
+            return;
+          }
+          if (allocations.length > 0) {
+            const { error: insErr } = await sb.from('overtime_batch_allocations').insert(
+              allocations.map((a) => ({
+                id: a.id,
+                request_id: requestId,
+                production_order_id: a.productionOrderId || null,
+                production_order_number: a.productionOrderNumber,
+                production_batch_number: a.productionBatchNumber,
+                product_id: a.productId || null,
+                product_name: a.productName,
+                process_type: a.processType,
+                allocated_hours: Number(a.allocatedHours) || 0,
+                hourly_rate_bdt: Number(a.hourlyRateBDT) || 0,
+                allocated_cost_bdt: Number(a.allocatedCostBDT) || 0,
+                is_overhead: Boolean(a.isOverhead),
+                notes: a.notes || null,
+              }))
+            );
+            if (insErr) console.warn('Supabase overtime_batch_allocations insert failed:', insErr.message);
+          }
+          await sb
+            .from('overtime_requests')
+            .update({ is_costing_allocated: allocations.length > 0, updated_at: nowIso })
+            .eq('id', requestId);
+        });
+    }
+
+    addOvertimeAuditLog({
+      recordId: requestId,
+      recordType: 'ALLOCATION',
+      action: 'BATCH_ALLOCATION_UPDATED',
+      actorName: currentUser.name,
+      actorRole: currentUser.role,
+      details: `Updated batch split for ${target.requestNumber} across ${allocations.length} batches (${totalAllocated} hrs)`,
+    });
   };
 
   const updateOvertimePolicy = (policy: OvertimePolicyConfig) => {
+    const nowIso = new Date().toISOString();
+    const updatedPolicy = { ...policy, updatedAt: nowIso, updatedBy: currentUser.name };
     setOvertimePolicies((prev) =>
-      prev.map((p) => (p.id === policy.id ? { ...policy, updatedAt: new Date().toISOString(), updatedBy: currentUser.name } : p))
+      prev.map((p) => (p.id === policy.id ? updatedPolicy : p))
     );
+    const sb = getSupabase();
+    if (sb) {
+      sb.from('overtime_policies')
+        .upsert({
+          id: updatedPolicy.id,
+          policy_name: updatedPolicy.policyName,
+          is_default: updatedPolicy.isDefault,
+          department: updatedPolicy.department || 'All Departments',
+          standard_working_days_per_month: updatedPolicy.standardWorkingDaysPerMonth,
+          standard_daily_working_hours: updatedPolicy.standardDailyWorkingHours,
+          standard_monthly_working_hours: updatedPolicy.standardMonthlyWorkingHours,
+          wage_basis: updatedPolicy.wageBasis,
+          overtime_multiplier_regular: updatedPolicy.overtimeMultiplierRegular,
+          overtime_multiplier_weekend: updatedPolicy.overtimeMultiplierWeekend,
+          overtime_multiplier_holiday: updatedPolicy.overtimeMultiplierHoliday,
+          overtime_multiplier_night_shift: updatedPolicy.overtimeMultiplierNightShift,
+          minimum_ot_minutes_threshold: updatedPolicy.minimumOtMinutesThreshold,
+          max_ot_hours_per_day: updatedPolicy.maxOtHoursPerDay,
+          max_ot_hours_per_month: updatedPolicy.maxOtHoursPerMonth,
+          allow_overnight_overtime: updatedPolicy.allowOvernightOvertime,
+          require_supervisor_pre_approval: updatedPolicy.requireSupervisorPreApproval,
+          updated_by: updatedPolicy.updatedBy || null,
+          updated_at: nowIso,
+        })
+        .then(({ error }) => {
+          if (error) console.warn('Supabase overtime_policies upsert failed:', error.message);
+        });
+    }
     addOvertimeAuditLog({
       recordId: policy.id,
       recordType: 'POLICY',
@@ -18504,6 +19057,11 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const clearOvertimeData = () => {
+    const reqIds = overtimeRequests.map((r) => r.id);
+    const attIds = overtimeAttendances.map((a) => a.id);
+    const audIds = overtimeAuditLogs.map((l) => l.id);
+    const recIds = overtimeRecords.map((r) => r.id);
+
     setOvertimeRecords([]);
     setOvertimeRequests([]);
     setOvertimeAttendances([]);
@@ -18526,10 +19084,22 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         console.warn('Error clearing overtime storage:', e);
       }
     }
+
+    const sb = getSupabase();
+    if (sb) {
+      Promise.allSettled([
+        reqIds.length > 0 ? sb.from('overtime_batch_allocations').delete().in('request_id', reqIds) : Promise.resolve(),
+        attIds.length > 0 ? sb.from('overtime_attendances').delete().in('id', attIds) : Promise.resolve(),
+        audIds.length > 0 ? sb.from('overtime_audit_logs').delete().in('id', audIds) : Promise.resolve(),
+        reqIds.length > 0 ? sb.from('overtime_requests').delete().in('id', reqIds) : Promise.resolve(),
+        recIds.length > 0 ? sb.from('employee_overtimes').delete().in('id', recIds) : Promise.resolve(),
+      ]).catch(() => {});
+    }
+
     addAuditLog(
       'OVERTIME_DATA_CLEARED',
       'Overtime Management',
-      'Cleared test and local session memory data from Overtime Management'
+      'Cleared Overtime Management data from local storage and Supabase'
     );
   };
 
@@ -18722,6 +19292,8 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setMonthlyPayrollRuns((prev) => [newRun, ...prev.filter((r) => r.monthYear !== monthYear)]);
     
     // Mark approved overtime requests as processed in this payroll run
+    const processedReqIds: string[] = [];
+    const nowIso = new Date().toISOString();
     setOvertimeRequests((prev) =>
       prev.map((r) => {
         if (
@@ -18729,17 +19301,34 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           (r.overtimeDate.startsWith(monthYear) || r.payrollMonth === monthYear) &&
           !r.isPayrollProcessed
         ) {
+          processedReqIds.push(r.id);
           return {
             ...r,
             isPayrollProcessed: true,
             payrollRunId: runId,
             payrollMonth: monthYear,
-            updatedAt: new Date().toISOString(),
+            updatedAt: nowIso,
           };
         }
         return r;
       })
     );
+
+    const sbPayroll = getSupabase();
+    if (sbPayroll && processedReqIds.length > 0) {
+      sbPayroll
+        .from('overtime_requests')
+        .update({
+          is_payroll_processed: true,
+          payroll_run_id: runId,
+          payroll_month: monthYear,
+          updated_at: nowIso,
+        })
+        .in('id', processedReqIds)
+        .then(({ error }) => {
+          if (error) console.warn('Supabase payroll OT lock failed:', error.message);
+        });
+    }
 
     addAuditLog(
       'PAYROLL_GENERATED',
@@ -18823,6 +19412,31 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const deleteMonthlyPayrollRun = (runId: string) => {
     setMonthlyPayrollRuns((prev) => prev.filter((r) => r.id !== runId));
+    const unlockedIds = overtimeRequests.filter((r) => r.payrollRunId === runId).map((r) => r.id);
+    if (unlockedIds.length > 0) {
+      const nowIso = new Date().toISOString();
+      setOvertimeRequests((prev) =>
+        prev.map((r) =>
+          r.payrollRunId === runId
+            ? { ...r, isPayrollProcessed: false, payrollRunId: undefined, payrollMonth: undefined, updatedAt: nowIso }
+            : r
+        )
+      );
+      const sb = getSupabase();
+      if (sb) {
+        sb.from('overtime_requests')
+          .update({
+            is_payroll_processed: false,
+            payroll_run_id: null,
+            payroll_month: null,
+            updated_at: nowIso,
+          })
+          .eq('payroll_run_id', runId)
+          .then(({ error }) => {
+            if (error) console.warn('Supabase payroll OT unlock failed:', error.message);
+          });
+      }
+    }
     addAuditLog('PAYROLL_DELETED', 'HR & Payroll', `Deleted payroll run ID ${runId}`);
   };
 

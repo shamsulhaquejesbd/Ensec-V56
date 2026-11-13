@@ -3593,3 +3593,11 @@ CREATE POLICY "Allow public all attendance_rejected_attempts" ON public.attendan
 GRANT ALL ON public.office_locations TO postgres, anon, authenticated, service_role;
 GRANT ALL ON public.attendance_rejected_attempts TO postgres, anon, authenticated, service_role;
 
+-- ============================================================================
+-- 44. LEGACY PAYROLL OVERTIME RLS POLICY ALIGNMENT
+-- Ensures legacy Payroll -> Overtime inserts/approvals on employee_overtimes succeed under RLS
+-- ============================================================================
+ALTER TABLE public.employee_overtimes ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow public all employee_overtimes" ON public.employee_overtimes;
+CREATE POLICY "Allow public all employee_overtimes" ON public.employee_overtimes FOR ALL USING (true) WITH CHECK (true);
+GRANT ALL ON public.employee_overtimes TO postgres, anon, authenticated, service_role;

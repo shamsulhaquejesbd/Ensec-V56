@@ -104,7 +104,7 @@ export const OvertimeBatchAllocationTab: React.FC<OvertimeBatchAllocationTabProp
             <tbody className="divide-y divide-slate-100 text-sm">
               {eligibleRequests.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="py-8 text-center text-slate-400 text-xs">
+                  <td colSpan={7} className="py-8 text-center text-slate-400 text-xs">
                     No overtime requests found for batch allocation.
                   </td>
                 </tr>
@@ -180,7 +180,7 @@ export const OvertimeBatchAllocationTab: React.FC<OvertimeBatchAllocationTabProp
                           </span>
                         ) : (
                           <span className="text-rose-600 flex items-center gap-1">
-                            <AlertCircle className="w-3 h-3" /> Partial ({totalAllocatedHrs}/{req.actualOvertimeHours}h)
+                            <AlertCircle className="w-3 h-3" /> Partial ({totalAllocatedHrs}/{req.actualOvertimeHours || req.expectedHours || 0}h)
                           </span>
                         )}
                       </div>

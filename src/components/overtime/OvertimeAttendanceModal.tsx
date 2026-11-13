@@ -22,9 +22,10 @@ export const OvertimeAttendanceModal: React.FC<OvertimeAttendanceModalProps> = (
   isOpen,
   onClose,
 }) => {
-  const { fieldForceReps, recordOvertimeAttendance, currentUser } = useERP();
+  const { fieldForceReps, overtimeRequests, recordOvertimeAttendance, currentUser } = useERP();
 
   const [selectedEmpId, setSelectedEmpId] = useState('');
+  const [selectedRequestId, setSelectedRequestId] = useState('');
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
   const [normalCheckIn, setNormalCheckIn] = useState('08:00');
   const [normalCheckOut, setNormalCheckOut] = useState('17:00');
@@ -38,6 +39,10 @@ export const OvertimeAttendanceModal: React.FC<OvertimeAttendanceModalProps> = (
   if (!isOpen) return null;
 
   const selectedRep = fieldForceReps.find(r => r.id === selectedEmpId);
+  const employeeRequests = overtimeRequests.filter(
+    r => r.employeeId === selectedEmpId && r.status !== 'Rejected'
+  );
+  const linkedRequest = employeeRequests.find(r => r.id === selectedRequestId);
 
   // Calculate net overtime hours in real-time
   const netHours = calculateNetOvertimeHours(
@@ -47,13 +52,29 @@ export const OvertimeAttendanceModal: React.FC<OvertimeAttendanceModalProps> = (
     isOvernight
   );
 
+  const handleSelectRequest = (reqId: string) => {
+    setSelectedRequestId(reqId);
+    const req = employeeRequests.find(r => r.id === reqId);
+    if (req) {
+      if (req.overtimeDate) setDate(req.overtimeDate);
+      if (req.expectedStartTime) setOvertimeCheckIn(req.expectedStartTime);
+      if (req.expectedEndTime) setOvertimeCheckOut(req.expectedEndTime);
+    }
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedRep) return;
 
+    const finalNotes = isOvernight && overnightNextDayDate
+      ? `${notes ? `${notes} • ` : ''}Overnight end date: ${overnightNextDayDate}`
+      : notes;
+
     recordOvertimeAttendance({
+      requestId: linkedRequest?.id,
+      requestNumber: linkedRequest?.requestNumber,
       employeeId: selectedRep.id,
-      employeeCode: selectedRep.employeeId || selectedRep.id,
+      employeeCode: selectedRep.code || selectedRep.id,
       employeeName: selectedRep.name,
       department: selectedRep.department || 'Production Assembly',
       designation: selectedRep.designation || 'Operator',
@@ -67,10 +88,10 @@ export const OvertimeAttendanceModal: React.FC<OvertimeAttendanceModalProps> = (
       rawCalculatedHours: netHours,
       actualOvertimeHours: netHours,
       isVerified: currentUser.role === 'Super Admin',
-      verifiedBy: currentUser.role === 'Super Admin' ? 'Admin Controller' : undefined,
+      verifiedBy: currentUser.role === 'Super Admin' ? currentUser.name : undefined,
       verificationDate: currentUser.role === 'Super Admin' ? new Date().toISOString().split('T')[0] : undefined,
       syncSource: 'Manual',
-      notes,
+      notes: finalNotes,
     });
 
     onClose();
@@ -105,18 +126,42 @@ export const OvertimeAttendanceModal: React.FC<OvertimeAttendanceModalProps> = (
             </label>
             <select
               value={selectedEmpId}
-              onChange={(e) => setSelectedEmpId(e.target.value)}
+              onChange={(e) => {
+                setSelectedEmpId(e.target.value);
+                setSelectedRequestId('');
+              }}
               required
               className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
             >
               <option value="">-- Choose Employee from Central Master --</option>
               {fieldForceReps.map((rep) => (
                 <option key={rep.id} value={rep.id}>
-                  {rep.name} ({rep.id}) — {rep.department || 'Production'} / {rep.designation || 'Worker'}
+                  {rep.name} ({rep.code || rep.id}) — {rep.department || 'Production'} / {rep.designation || 'Worker'}
                 </option>
               ))}
             </select>
           </div>
+
+          {/* Optional linked Overtime Request */}
+          {selectedEmpId && employeeRequests.length > 0 && (
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+                Link to Overtime Request (Optional)
+              </label>
+              <select
+                value={selectedRequestId}
+                onChange={(e) => handleSelectRequest(e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs bg-slate-50 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+              >
+                <option value="">-- Standalone Attendance Punch (Unlinked) --</option>
+                {employeeRequests.map((req) => (
+                  <option key={req.id} value={req.id}>
+                    {req.requestNumber} • {req.overtimeDate} ({req.expectedStartTime}–{req.expectedEndTime}) [{req.status}]
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {/* Date & Overnight Shift toggle */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

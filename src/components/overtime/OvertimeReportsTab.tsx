@@ -35,22 +35,39 @@ export const OvertimeReportsTab: React.FC = () => {
     { id: 7, name: 'Overtime Hours vs Production Output Report', icon: TrendingUp, desc: 'Efficiency ratio of overtime input hours to finished goods units produced' },
   ];
 
+  const availableDepartments = Array.from(
+    new Set([
+      'Production Assembly',
+      'Cell Formation & Testing',
+      'Quality Control',
+      'Plant Maintenance',
+      ...fieldForceReps.map((r) => r.department).filter(Boolean) as string[],
+      ...overtimeRequests.map((r) => r.department).filter(Boolean),
+    ])
+  );
+
+  const filteredRequests = overtimeRequests.filter((r) => {
+    if (monthFilter && !String(r.overtimeDate || '').startsWith(monthFilter)) return false;
+    if (departmentFilter !== 'all' && r.department !== departmentFilter) return false;
+    if (employeeFilter !== 'all' && r.employeeId !== employeeFilter) return false;
+    return true;
+  });
+
   // Helper to export any dataset to Excel
   const exportToExcel = (data: any[], fileName: string) => {
     const ws = XLSX.utils.json_to_sheet(data);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Report');
-    XLSX.writeFile(wb, `${fileName}_${monthFilter}.xlsx`);
+    XLSX.writeFile(wb, `${fileName}_${monthFilter || 'all'}.xlsx`);
   };
 
   // Generate Report 1: Employee-wise
   const generateEmployeeReport = () => {
-    const grouped: { [empId: string]: { name: string; dept: string; hours: number; amount: number; count: number } } = {};
-    overtimeRequests.forEach(r => {
-      if (departmentFilter !== 'all' && r.department !== departmentFilter) return;
-      if (employeeFilter !== 'all' && r.employeeId !== employeeFilter) return;
+    const grouped: { [empId: string]: { code: string; name: string; dept: string; hours: number; amount: number; count: number } } = {};
+    filteredRequests.forEach(r => {
       if (!grouped[r.employeeId]) {
         grouped[r.employeeId] = {
+          code: r.employeeCode || r.employeeId,
           name: r.employeeName,
           dept: r.department,
           hours: 0,
@@ -63,8 +80,8 @@ export const OvertimeReportsTab: React.FC = () => {
       grouped[r.employeeId].count += 1;
     });
 
-    return Object.entries(grouped).map(([id, val]) => ({
-      'Employee ID': id,
+    return Object.entries(grouped).map(([, val]) => ({
+      'Employee ID': val.code,
       'Employee Name': val.name,
       'Department': val.dept,
       'OT Duty Days': val.count,
@@ -77,7 +94,7 @@ export const OvertimeReportsTab: React.FC = () => {
   // Generate Report 2: Department-wise
   const generateDepartmentReport = () => {
     const grouped: { [dept: string]: { hours: number; amount: number; employees: Set<string> } } = {};
-    overtimeRequests.forEach(r => {
+    filteredRequests.forEach(r => {
       if (!grouped[r.department]) {
         grouped[r.department] = { hours: 0, amount: 0, employees: new Set() };
       }
@@ -98,7 +115,7 @@ export const OvertimeReportsTab: React.FC = () => {
   // Generate Report 3: Batch-wise
   const generateBatchReport = () => {
     const batchMap: { [batch: string]: { orderNo: string; hours: number; cost: number; process: string } } = {};
-    overtimeRequests.forEach(r => {
+    filteredRequests.forEach(r => {
       r.batchAllocations?.forEach(b => {
         const key = b.isOverhead ? 'FACTORY_OVERHEAD' : b.productionBatchNumber;
         if (!batchMap[key]) {
@@ -126,7 +143,7 @@ export const OvertimeReportsTab: React.FC = () => {
   // Generate Report 4: Order-wise
   const generateOrderReport = () => {
     return productionOrders.map(order => {
-      const orderOvertimeReqs = overtimeRequests.filter(r => 
+      const orderOvertimeReqs = filteredRequests.filter(r =>
         r.batchAllocations?.some(b => b.productionOrderNumber === order.orderNumber)
       );
       const totalCost = orderOvertimeReqs.reduce((sum, r) => {
@@ -152,10 +169,10 @@ export const OvertimeReportsTab: React.FC = () => {
 
   // Generate Report 5: Payroll Sync
   const generatePayrollReport = () => {
-    return overtimeRequests.map(r => ({
+    return filteredRequests.map(r => ({
       'Request #': r.requestNumber,
       'Date': r.overtimeDate,
-      'Employee ID': r.employeeId,
+      'Employee ID': r.employeeCode || r.employeeId,
       'Employee Name': r.employeeName,
       'Department': r.department,
       'Hours': r.actualOvertimeHours || r.expectedHours,
@@ -169,7 +186,7 @@ export const OvertimeReportsTab: React.FC = () => {
 
   // Generate Report 6: Pending Approvals
   const generatePendingReport = () => {
-    return overtimeRequests.filter(r => r.status !== 'Final Approved' && r.status !== 'Rejected').map(r => ({
+    return filteredRequests.filter(r => r.status !== 'Final Approved' && r.status !== 'Rejected').map(r => ({
       'Request #': r.requestNumber,
       'Date': r.overtimeDate,
       'Employee Name': r.employeeName,
@@ -185,7 +202,7 @@ export const OvertimeReportsTab: React.FC = () => {
   // Generate Report 7: Hours vs Output
   const generateEfficiencyReport = () => {
     return productionOrders.map(order => {
-      const orderOvertimeReqs = overtimeRequests.filter(r => 
+      const orderOvertimeReqs = filteredRequests.filter(r =>
         r.batchAllocations?.some(b => b.productionOrderNumber === order.orderNumber)
       );
       const totalHours = orderOvertimeReqs.reduce((sum, r) => {
@@ -280,10 +297,9 @@ export const OvertimeReportsTab: React.FC = () => {
             className="px-2.5 py-1.5 border border-slate-200 rounded-lg text-slate-700 bg-white"
           >
             <option value="all">All Departments</option>
-            <option value="Production Assembly">Production Assembly</option>
-            <option value="Cell Formation & Testing">Cell Formation & Testing</option>
-            <option value="Quality Control">Quality Control</option>
-            <option value="Plant Maintenance">Plant Maintenance</option>
+            {availableDepartments.map((dept) => (
+              <option key={dept} value={dept}>{dept}</option>
+            ))}
           </select>
 
           <select
@@ -293,7 +309,7 @@ export const OvertimeReportsTab: React.FC = () => {
           >
             <option value="all">All Employees</option>
             {fieldForceReps.map(r => (
-              <option key={r.id} value={r.id}>{r.name} ({r.id})</option>
+              <option key={r.id} value={r.id}>{r.name} ({r.code || r.id})</option>
             ))}
           </select>
         </div>
@@ -307,6 +323,15 @@ export const OvertimeReportsTab: React.FC = () => {
             onChange={(e) => setMonthFilter(e.target.value)}
             className="px-2 py-1 border border-slate-200 rounded text-slate-700 bg-white"
           />
+          {monthFilter && (
+            <button
+              type="button"
+              onClick={() => setMonthFilter('')}
+              className="px-2 py-1 text-[11px] rounded border border-slate-200 text-slate-600 hover:bg-slate-50"
+            >
+              All Months
+            </button>
+          )}
         </div>
       </div>
 
@@ -334,7 +359,7 @@ export const OvertimeReportsTab: React.FC = () => {
             <tbody className="divide-y divide-slate-100">
               {currentData.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="py-10 text-center text-slate-400">
+                  <td colSpan={11} className="py-10 text-center text-slate-400">
                     No data found for the selected filter combination.
                   </td>
                 </tr>
