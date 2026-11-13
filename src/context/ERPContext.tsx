@@ -16000,6 +16000,106 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // --- INSTALLMENT & RECEIVABLES MANAGEMENT METHODS ---
   // ============================================================================
 
+  const findLinkedSalesOrderForPlan = (plan: Pick<InstallmentPlan, 'salesOrderId' | 'invoiceReference'>) => {
+    const invRefLower = String(plan.invoiceReference || '').trim().toLowerCase();
+    return salesOrders.find(
+      (so) =>
+        (plan.salesOrderId && String(so.id) === String(plan.salesOrderId)) ||
+        (invRefLower &&
+          ((so.orderNumber && so.orderNumber.trim().toLowerCase() === invRefLower) ||
+            (so.invoiceNumber && so.invoiceNumber.trim().toLowerCase() === invRefLower) ||
+            (so.invoiceNo && so.invoiceNo.trim().toLowerCase() === invRefLower)))
+    );
+  };
+
+  const syncInstallmentPaymentToSalesOrder = async (
+    plan: Pick<InstallmentPlan, 'salesOrderId' | 'invoiceReference'>,
+    paidAmountBDT: number,
+    options?: { markFullySettled?: boolean }
+  ) => {
+    const amount = Math.max(0, Number(paidAmountBDT) || 0);
+    if (amount <= 0 && !options?.markFullySettled) return;
+
+    const matchedOrder = findLinkedSalesOrderForPlan(plan);
+    if (!matchedOrder) return;
+
+    const currentPaid = Number(matchedOrder.paidAmountBDT) || 0;
+    const netAmount = Number(matchedOrder.netAmountBDT) || 0;
+    const currentDue =
+      matchedOrder.dueAmountBDT !== undefined
+        ? Number(matchedOrder.dueAmountBDT) || 0
+        : Math.max(0, netAmount - currentPaid);
+
+    const effectiveReduction = options?.markFullySettled
+      ? currentDue
+      : Math.min(currentDue, amount);
+
+    const updatedPaid = options?.markFullySettled
+      ? netAmount
+      : Math.min(netAmount, currentPaid + amount);
+    const updatedDue = options?.markFullySettled
+      ? 0
+      : Math.max(0, netAmount - updatedPaid);
+    const updatedPaymentStatus =
+      updatedDue <= 0 ? 'Paid' : updatedPaid > 0 ? 'Partially Paid' : 'Unpaid';
+
+    setSalesOrders((prev) =>
+      prev.map((so) =>
+        so.id === matchedOrder.id
+          ? {
+              ...so,
+              paidAmountBDT: updatedPaid,
+              dueAmountBDT: updatedDue,
+              paymentStatus: updatedPaymentStatus,
+            }
+          : so
+      )
+    );
+
+    if (effectiveReduction > 0) {
+      if (matchedOrder.channel === 'Distributor Sales' && matchedOrder.distributorId) {
+        setDistributors((dists) =>
+          dists.map((d) =>
+            d.id === matchedOrder.distributorId
+              ? { ...d, currentOutstandingBDT: Math.max(0, d.currentOutstandingBDT - effectiveReduction) }
+              : d
+          )
+        );
+      } else if (matchedOrder.customerId) {
+        setCustomers((custs) =>
+          custs.map((c) =>
+            c.id === matchedOrder.customerId
+              ? { ...c, outstandingBalanceBDT: Math.max(0, c.outstandingBalanceBDT - effectiveReduction) }
+              : c
+          )
+        );
+      }
+    }
+
+    const sb = getSupabase();
+    if (sb) {
+      try {
+        const orderIdStr = String(matchedOrder.id || '');
+        const isNumeric = /^\d+$/.test(orderIdStr);
+        const query = isNumeric
+          ? sb
+              .from('sales_orders')
+              .update({ paid_amount_bdt: updatedPaid, due_amount_bdt: updatedDue })
+              .eq('id', Number(orderIdStr))
+          : sb
+              .from('sales_orders')
+              .update({ paid_amount_bdt: updatedPaid, due_amount_bdt: updatedDue })
+              .eq('order_number', matchedOrder.orderNumber || orderIdStr);
+        const { error } = await query;
+        if (error) {
+          console.error('Failed to sync installment payment to Supabase sales_orders:', error);
+        }
+      } catch (err) {
+        console.warn('Supabase sales_orders installment sync notice:', err);
+      }
+    }
+  };
+
   const createInstallmentPlan = async (
     planData: Omit<InstallmentPlan, 'id' | 'createdAt' | 'updatedAt'>,
     customSchedules?: InstallmentSchedule[]
@@ -16070,7 +16170,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setInstallmentPlans((prev) => [newPlan, ...prev]);
       setInstallmentSchedules((prev) => [...generatedSchedules, ...prev]);
 
-      // If down payment was received, record in Cash Book
+      // If down payment was received, record in Cash Book and reflect on linked Sales Order
       if (newPlan.downPaymentBDT > 0) {
         const lastCash = cashBook[cashBook.length - 1];
         const prevBal = lastCash ? lastCash.runningBalanceBDT : 10000000;
@@ -16087,6 +16187,15 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           runningBalanceBDT: prevBal + newPlan.downPaymentBDT,
         };
         setCashBook((prev) => [...prev, downPaymentVoucher]);
+
+        const linkedOrder = findLinkedSalesOrderForPlan(newPlan);
+        if (linkedOrder) {
+          const alreadyPaidOnOrder = Number(linkedOrder.paidAmountBDT) || 0;
+          const downPaymentDelta = Math.max(0, Number(newPlan.downPaymentBDT) - alreadyPaidOnOrder);
+          if (downPaymentDelta > 0) {
+            await syncInstallmentPaymentToSalesOrder(newPlan, downPaymentDelta);
+          }
+        }
       }
 
       // Add Audit Log
@@ -16265,6 +16374,15 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setInstallmentSchedules(newAllSchedules);
       setInstallmentPlans((prev) => prev.map((p) => (p.id === plan.id ? updatedPlan : p)));
 
+      // Update linked Sales Order Paid / Due amounts & Customer/Distributor outstanding balance
+      const principalPaidBDT =
+        plan.totalInterestBDT > 0 && plan.totalPayableBDT > 0
+          ? Math.round(paymentData.amountBDT * (plan.financedAmountBDT / plan.totalPayableBDT))
+          : paymentData.amountBDT;
+      await syncInstallmentPaymentToSalesOrder(plan, principalPaidBDT, {
+        markFullySettled: totalOutstanding <= 0,
+      });
+
       // 1. Post to Cash Book & General Ledger
       const lastCash = cashBook[cashBook.length - 1];
       const prevBal = lastCash ? lastCash.runningBalanceBDT : 10000000;
@@ -16433,6 +16551,11 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       setInstallmentSchedules(updatedSchedules);
       setInstallmentPlans((prev) => prev.map((p) => (p.id === planId ? updatedPlan : p)));
+
+      // Mark linked Sales Order as fully paid / zero due on early settlement
+      await syncInstallmentPaymentToSalesOrder(plan, calc.settlementNetPayableBDT, {
+        markFullySettled: true,
+      });
 
       // Post Settlement Cash Inflow to Cash Book
       const lastCash = cashBook[cashBook.length - 1];
