@@ -22,6 +22,7 @@ export const RawMaterialInventoryPage: React.FC = () => {
     currentUser,
     inventoryBatches, 
     inventoryMovements, 
+    materialIssues,
     rawMaterials, 
     rawMaterialCategories,
     suppliers, 
@@ -168,27 +169,62 @@ export const RawMaterialInventoryPage: React.FC = () => {
     return 'bg-slate-100 text-slate-800 dark:bg-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-600';
   };
 
-  // Combine recorded inventoryBatches with auto-reconciled batches for raw materials with stock from bulk uploads
+  // Combine recorded inventoryBatches with auto-reconciled batches & historical material issue quantities
   const allEffectiveBatches = useMemo(() => {
-    const existingBatchesMap = new Map<string, number>();
+    const existingBatchesAvailMap = new Map<string, number>();
+    const existingBatchesIssuedMap = new Map<string, number>();
+    const existingBatchesCountMap = new Map<string, number>();
+
     inventoryBatches.forEach(b => {
       const code = b.materialCode?.trim().toUpperCase();
       if (code) {
-        existingBatchesMap.set(code, (existingBatchesMap.get(code) || 0) + (Number(b.availableQty) || 0));
+        existingBatchesAvailMap.set(code, (existingBatchesAvailMap.get(code) || 0) + (Number(b.availableQty) || 0));
+        existingBatchesIssuedMap.set(code, (existingBatchesIssuedMap.get(code) || 0) + (Number(b.issuedQty) || 0));
+        existingBatchesCountMap.set(code, (existingBatchesCountMap.get(code) || 0) + 1);
       }
     });
 
+    // Aggregate issued quantities recorded in Material Issues per material (matched by code, id, or name)
+    const orderedIssuedByCode = new Map<string, number>();
+    const orderedIssuedById = new Map<string, number>();
+    const orderedIssuedByName = new Map<string, number>();
+    (materialIssues || []).forEach(mi => {
+      (mi.items || []).forEach(it => {
+        const qty = Number(it.issuedQty) || 0;
+        if (qty <= 0) return;
+        const cKey = (it.materialCode || '').trim().toUpperCase();
+        const iKey = String(it.materialId || '').trim().toUpperCase();
+        const nKey = (it.materialName || '').trim().toUpperCase();
+        if (cKey) orderedIssuedByCode.set(cKey, (orderedIssuedByCode.get(cKey) || 0) + qty);
+        if (iKey) orderedIssuedById.set(iKey, (orderedIssuedById.get(iKey) || 0) + qty);
+        if (nKey) orderedIssuedByName.set(nKey, (orderedIssuedByName.get(nKey) || 0) + qty);
+      });
+    });
+
+    const effectivePersistedBatches: InventoryBatch[] = inventoryBatches.map(b => ({ ...b }));
     const synthesizedBatches: InventoryBatch[] = [];
 
     rawMaterials.forEach(rm => {
       if (!rm.code) return;
       const codeKey = rm.code.trim().toUpperCase();
-      const currentBatchStock = existingBatchesMap.get(codeKey) || 0;
+      const idKey = String(rm.id || '').trim().toUpperCase();
+      const nameKey = (rm.name || '').trim().toUpperCase();
+
+      const currentBatchAvail = existingBatchesAvailMap.get(codeKey) || 0;
+      const currentBatchIssued = existingBatchesIssuedMap.get(codeKey) || 0;
+      const currentBatchCount = existingBatchesCountMap.get(codeKey) || 0;
       const totalStock = Number(rm.stockKushtia ?? rm.totalAvailableStock ?? 0);
 
-      // If raw material has uploaded stock exceeding recorded batches (or 0 batches recorded)
-      if (totalStock > currentBatchStock) {
-        const delta = totalStock - currentBatchStock;
+      const totalOrderedIssued =
+        orderedIssuedByCode.get(codeKey) ??
+        orderedIssuedById.get(idKey) ??
+        orderedIssuedByName.get(nameKey) ??
+        0;
+      const untrackedIssuedQty = Math.max(0, totalOrderedIssued - currentBatchIssued);
+
+      // If raw material has uploaded stock exceeding recorded batches or unbatched issued qty
+      if (totalStock > currentBatchAvail || (currentBatchCount === 0 && untrackedIssuedQty > 0)) {
+        const delta = Math.max(0, totalStock - currentBatchAvail);
         synthesizedBatches.push({
           id: `batch-auto-${rm.code}`,
           batchNumber: `RM-BATCH-INIT-${rm.code}`,
@@ -201,22 +237,42 @@ export const RawMaterialInventoryPage: React.FC = () => {
           supplierName: rm.preferredSupplier || 'Initial Stock (Bulk Excel Upload)',
           purchaseDate: rm.createdAt ? rm.createdAt.substring(0, 10) : new Date().toISOString().substring(0, 10),
           unitPurchaseRate: Number(rm.lastPurchaseUnitCostBDT || rm.standardCostBDT || 0),
-          receivedQty: delta,
-          issuedQty: 0,
+          receivedQty: delta + untrackedIssuedQty,
+          issuedQty: untrackedIssuedQty,
           availableQty: delta,
           warehouseId: 'WH-KUSHTIA',
           warehouseName: 'Kushtia Warehouse',
-          status: 'Active',
+          status: delta > 0 ? 'Active' : 'Depleted',
           grnRef: 'BULK-UPLOAD-STOCK',
           remarks: 'Auto-reconciled from Bulk Excel upload stock',
           createdAt: rm.createdAt || new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         });
+      } else if (currentBatchCount > 0 && untrackedIssuedQty > 0) {
+        // Material already has persisted batches, attribute any unpersisted historical issue FIFO for accurate display
+        let remaining = untrackedIssuedQty;
+        const candidateIndices = effectivePersistedBatches
+          .map((b, idx) => ({ b, idx }))
+          .filter(({ b }) => (b.materialCode || '').trim().toUpperCase() === codeKey)
+          .sort((a, b) => new Date(a.b.purchaseDate || '2026-01-01').getTime() - new Date(b.b.purchaseDate || '2026-01-01').getTime());
+
+        for (const { b, idx } of candidateIndices) {
+          if (remaining <= 0) break;
+          const room = Math.max(0, Number(b.availableQty) || 0);
+          const allocate = candidateIndices.length === 1 ? remaining : Math.min(room, remaining);
+          if (allocate > 0) {
+            effectivePersistedBatches[idx] = {
+              ...b,
+              issuedQty: (Number(b.issuedQty) || 0) + allocate,
+            };
+            remaining -= allocate;
+          }
+        }
       }
     });
 
-    return [...inventoryBatches, ...synthesizedBatches];
-  }, [inventoryBatches, rawMaterials]);
+    return [...effectivePersistedBatches, ...synthesizedBatches];
+  }, [inventoryBatches, rawMaterials, materialIssues]);
 
   // Check how many raw materials have uploaded stock waiting for permanent database batch sync
   const missingBatchMaterialsCount = useMemo(() => {

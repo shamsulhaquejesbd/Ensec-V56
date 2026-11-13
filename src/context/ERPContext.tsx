@@ -364,6 +364,7 @@ interface ERPContextType {
   rawMaterialReceipts: RawMaterialReceipt[];
   refreshRawMaterialReceipts?: () => Promise<void>;
   refreshInventoryBatches?: () => Promise<void>;
+  refreshInventoryMovements?: () => Promise<void>;
   syncPendingReceiptsToSupabase?: () => Promise<{ syncedCount: number; message: string }>;
   materialIssues: MaterialIssue[];
   refreshMaterialIssues?: () => Promise<void>;
@@ -3143,12 +3144,29 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       [key: string]: any;
     }>
   ): Promise<InventoryBatch[]> => {
-    const existingBatchesMap = new Map<string, number>();
+    const existingBatchesAvailMap = new Map<string, number>();
+    const existingBatchesIssuedMap = new Map<string, number>();
+    const existingBatchNums = new Set<string>();
+    const existingBatchBarcodes = new Set<string>();
+
     inventoryBatches.forEach((b) => {
       const c = b.materialCode?.trim().toUpperCase();
       if (c) {
-        existingBatchesMap.set(c, (existingBatchesMap.get(c) || 0) + (Number(b.availableQty) || 0));
+        existingBatchesAvailMap.set(c, (existingBatchesAvailMap.get(c) || 0) + (Number(b.availableQty) || 0));
+        existingBatchesIssuedMap.set(c, (existingBatchesIssuedMap.get(c) || 0) + (Number(b.issuedQty) || 0));
       }
+      if (b.batchNumber) existingBatchNums.add(b.batchNumber.trim().toLowerCase());
+      if (b.batchBarcode) existingBatchBarcodes.add(b.batchBarcode.trim().toLowerCase());
+    });
+
+    const totalOrderedIssuedByCode = new Map<string, number>();
+    materialIssues.forEach((mi) => {
+      (mi.items || []).forEach((it) => {
+        const c = (it.materialCode || '').trim().toUpperCase();
+        if (c) {
+          totalOrderedIssuedByCode.set(c, (totalOrderedIssuedByCode.get(c) || 0) + (Number(it.issuedQty) || 0));
+        }
+      });
     });
 
     const now = new Date();
@@ -3164,20 +3182,40 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (!m.code) continue;
       const codeKey = m.code.trim().toUpperCase();
       const targetStock = Number(m.stockKushtia ?? 0);
-      const currentBatchStock = existingBatchesMap.get(codeKey) || 0;
+      const currentBatchStock = existingBatchesAvailMap.get(codeKey) || 0;
       const delta = targetStock - currentBatchStock;
+      const recordedIssued = existingBatchesIssuedMap.get(codeKey) || 0;
+      const orderedIssued = totalOrderedIssuedByCode.get(codeKey) || 0;
+      const untrackedIssued = Math.max(0, orderedIssued - recordedIssued);
 
-      if (delta > 0) {
-        const randSeq = Math.floor(100 + Math.random() * 900);
-        const batchNumber = m.batchNumber?.trim() || `RM-BATCH-INIT-${m.code.trim()}-${String(counter++).padStart(3, '0')}`;
-        const batchBarcode = m.batchBarcode?.trim() || `BC-BATCH-${yearMonth.slice(2)}-${randSeq}`;
+      if (delta > 0 || (recordedIssued === 0 && currentBatchStock === 0 && untrackedIssued > 0)) {
+        const effectiveAvail = Math.max(0, delta);
+        const effectiveReceived = effectiveAvail + untrackedIssued;
+        const seq = counter++;
+        const randSeq = Math.floor(1000 + Math.random() * 9000);
+        let batchNumber = m.batchNumber?.trim() || `RM-BATCH-INIT-${m.code.trim()}`;
+        if (existingBatchNums.has(batchNumber.toLowerCase())) {
+          batchNumber = `RM-BATCH-INIT-${m.code.trim()}-${String(seq).padStart(3, '0')}`;
+        }
+        while (existingBatchNums.has(batchNumber.toLowerCase())) {
+          batchNumber = `${batchNumber}-${Math.floor(10 + Math.random() * 89)}`;
+        }
+        existingBatchNums.add(batchNumber.toLowerCase());
+
+        let batchBarcode = m.batchBarcode?.trim() || `BC-BATCH-${yearMonth.slice(2)}-${m.code.trim()}-${randSeq}`;
+        while (existingBatchBarcodes.has(batchBarcode.toLowerCase())) {
+          batchBarcode = `${batchBarcode}-${Math.floor(10 + Math.random() * 89)}`;
+        }
+        existingBatchBarcodes.add(batchBarcode.toLowerCase());
+
         const unitRate = Number(m.lastPurchaseUnitCostBDT || m.standardCostBDT || 0);
         const supplierName = m.preferredSupplier || m.supplierName || 'Initial Stock (Bulk Excel Upload)';
         const warehouseId = m.warehouseId || 'WH-KUSHTIA';
         const warehouseName = m.warehouseName || 'Kushtia Warehouse';
+        const batchStatus: 'Active' | 'Depleted' = effectiveAvail > 0 ? 'Active' : 'Depleted';
 
         const batch: InventoryBatch = {
-          id: `batch-init-${Date.now()}-${counter}`,
+          id: `batch-init-${Date.now()}-${seq}`,
           batchNumber,
           batchBarcode,
           materialId: String(m.id || m.code),
@@ -3188,12 +3226,12 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           supplierName,
           purchaseDate: m.purchaseDate || now.toISOString().substring(0, 10),
           unitPurchaseRate: unitRate,
-          receivedQty: delta,
-          issuedQty: 0,
-          availableQty: delta,
+          receivedQty: effectiveReceived,
+          issuedQty: untrackedIssued,
+          availableQty: effectiveAvail,
           warehouseId,
           warehouseName,
-          status: 'Active',
+          status: batchStatus,
           grnRef: 'BULK-UPLOAD-STOCK',
           remarks: 'Auto-generated opening batch from raw material bulk Excel upload',
           createdAt: now.toISOString(),
@@ -3201,10 +3239,10 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         };
 
         newBatches.push(batch);
-        existingBatchesMap.set(codeKey, currentBatchStock + delta);
+        existingBatchesAvailMap.set(codeKey, currentBatchStock + effectiveAvail);
 
         const movement: InventoryMovement = {
-          id: `mov-init-${Date.now()}-${counter}`,
+          id: `mov-init-${Date.now()}-${seq}`,
           date: now.toISOString().substring(0, 10),
           timestamp: now.toISOString(),
           materialId: String(m.id || m.code),
@@ -3213,12 +3251,13 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           batchNumber,
           batchBarcode,
           movementType: 'INITIAL',
-          quantity: delta,
+          quantity: effectiveReceived,
           unitCostBDT: unitRate,
           unitCost: unitRate,
-          totalCost: delta * unitRate,
-          totalValueBDT: delta * unitRate,
+          totalCost: effectiveReceived * unitRate,
+          totalValueBDT: effectiveReceived * unitRate,
           referenceNo: 'BULK-UPLOAD-STOCK',
+          targetWarehouseName: warehouseName,
           warehouseName,
           performedBy: 'System (Bulk Import)',
           balanceAfter: targetStock,
@@ -3226,9 +3265,11 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         newMovements.push(movement);
 
+        const numericMatId = m.id && /^\d+$/.test(String(m.id)) ? Number(m.id) : null;
         supabaseBatches.push({
           batch_number: batch.batchNumber,
           batch_barcode: batch.batchBarcode,
+          material_id: numericMatId,
           material_code: batch.materialCode,
           material_name: batch.materialName,
           unit: batch.unit,
@@ -3236,28 +3277,31 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           purchase_date: batch.purchaseDate,
           unit_purchase_rate: batch.unitPurchaseRate,
           received_qty: batch.receivedQty,
-          issued_qty: 0,
+          issued_qty: batch.issuedQty,
           available_qty: batch.availableQty,
           warehouse_name: batch.warehouseName,
-          status: 'Active',
+          status: batchStatus,
           grn_ref: batch.grnRef,
           remarks: batch.remarks,
         });
 
         supabaseMovements.push({
           date: movement.date,
-          timestamp: movement.timestamp,
+          material_id: numericMatId,
           material_code: movement.materialCode,
           material_name: movement.materialName,
           batch_number: movement.batchNumber,
+          batch_barcode: movement.batchBarcode,
           movement_type: 'INITIAL',
           quantity: movement.quantity,
           unit_cost_bdt: movement.unitCostBDT,
           total_value_bdt: movement.totalValueBDT,
           reference_no: movement.referenceNo,
-          warehouse_name: movement.warehouseName,
+          target_warehouse_name: movement.targetWarehouseName,
           performed_by: movement.performedBy,
           balance_after: movement.balanceAfter,
+          notes: 'Auto-generated opening batch stock reconciliation',
+          created_at: now.toISOString(),
         });
       }
     }
@@ -3280,8 +3324,17 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const sb = getSupabase();
       if (sb) {
         try {
-          await sb.from('inventory_batches').insert(supabaseBatches);
-          await sb.from('inventory_movements').insert(supabaseMovements);
+          const { error: bErr } = await sb.from('inventory_batches').insert(supabaseBatches);
+          if (bErr && bErr.code === '23503') {
+            const safeBatches = supabaseBatches.map((sbRow) => ({ ...sbRow, material_id: null }));
+            await sb.from('inventory_batches').insert(safeBatches);
+          }
+          const { error: mErr } = await sb.from('inventory_movements').insert(supabaseMovements);
+          if (mErr && mErr.code === '23503') {
+            const safeMovs = supabaseMovements.map((smRow) => ({ ...smRow, material_id: null }));
+            await sb.from('inventory_movements').insert(safeMovs);
+          }
+          await Promise.allSettled([refreshInventoryBatches(), refreshInventoryMovements()]);
         } catch (err) {
           console.warn('Supabase batch insert warning:', err);
         }
@@ -5248,6 +5301,55 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  const refreshInventoryMovements = async () => {
+    const sb = getSupabase();
+    if (!sb) return;
+    try {
+      const { data, error } = await sb
+        .from('inventory_movements')
+        .select('*')
+        .order('id', { ascending: false })
+        .limit(500);
+
+      if (!error && Array.isArray(data) && data.length > 0) {
+        const mapped: InventoryMovement[] = data.map((m: any) => ({
+          id: String(m.id),
+          date: m.date || (m.created_at ? String(m.created_at).substring(0, 10) : new Date().toISOString().substring(0, 10)),
+          timestamp: m.created_at || m.date,
+          materialId: m.material_id ? String(m.material_id) : m.material_code,
+          materialCode: m.material_code || '',
+          materialName: m.material_name || '',
+          batchNumber: m.batch_number || '',
+          batchBarcode: m.batch_barcode || '',
+          movementType: (m.movement_type as any) || 'ADJUSTMENT',
+          quantity: Number(m.quantity) || 0,
+          unitCostBDT: Number(m.unit_cost_bdt) || 0,
+          unitCost: Number(m.unit_cost_bdt) || 0,
+          totalValueBDT: Number(m.total_value_bdt) || 0,
+          totalCost: Number(m.total_value_bdt) || 0,
+          referenceNo: m.reference_no || '',
+          referenceNumber: m.reference_no || '',
+          sourceWarehouseId: m.source_warehouse_id ? String(m.source_warehouse_id) : undefined,
+          sourceWarehouseName: m.source_warehouse_name || undefined,
+          targetWarehouseId: m.target_warehouse_id ? String(m.target_warehouse_id) : undefined,
+          targetWarehouseName: m.target_warehouse_name || undefined,
+          warehouseName: m.target_warehouse_name || m.source_warehouse_name || 'Kushtia Assembly Plant',
+          performedBy: m.performed_by || 'System',
+          notes: m.notes || undefined,
+          balanceAfter: Number(m.balance_after) || 0,
+          createdAt: m.created_at || new Date().toISOString(),
+        }));
+
+        setInventoryMovements(mapped);
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('ensec_inventory_movements', JSON.stringify(mapped));
+        }
+      }
+    } catch (e) {
+      console.warn('refreshInventoryMovements error:', e);
+    }
+  };
+
   const refreshProductionCosts = async () => {
     const sb = getSupabase();
     if (!sb) return;
@@ -5644,6 +5746,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       refreshRawMaterials(),
       refreshRawMaterialReceipts(),
       refreshInventoryBatches(),
+      refreshInventoryMovements(),
       refreshBOMs(),
       refreshFinishedGoodsReceipts(),
       refreshProductionOrders(),
@@ -8355,7 +8458,9 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const issueNumber = `MI-KUS-${year}-${issueSeq}`;
     const issueDate = new Date().toISOString().substring(0, 10);
 
-    const updatedBatches = [...inventoryBatches];
+    const updatedBatches: InventoryBatch[] = inventoryBatches.map((b) => ({ ...b }));
+    const createdBatchNumbers = new Set<string>();
+    const modifiedBatchNumbers = new Set<string>();
 
     // Helper to check if a batch belongs to a specific material
     const isBatchForMaterial = (b: InventoryBatch, matId: string, matCode?: string, matName?: string) => {
@@ -8373,58 +8478,52 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return false;
     };
 
-    // Ensure each component has a corresponding material batch in updatedBatches
-    for (const reqItem of issueData.items) {
-      const rm = rawMaterials.find(
-        (m) =>
-          String(m.id) === String(reqItem.materialId) ||
-          m.code === reqItem.materialId ||
-          (reqItem.materialCode && m.code === reqItem.materialCode) ||
-          (reqItem.materialName && m.name?.trim().toLowerCase() === reqItem.materialName.trim().toLowerCase())
-      );
-      const matIdStr = String(rm?.id || reqItem.materialId);
-      const matCodeStr = rm?.code || reqItem.materialCode || 'RM';
-      const matNameStr = rm?.name || reqItem.materialName || 'Raw Material';
-      const matUnitStr = rm?.unit || reqItem.unit || 'PCS';
-      const unitRate = Number(reqItem.unitCostBDT) || rm?.lastPurchaseUnitCostBDT || rm?.standardCostBDT || 0;
-
-      let batch = updatedBatches.find(
-        (b) =>
-          isBatchForMaterial(b, matIdStr, matCodeStr, matNameStr) &&
-          (b.batchNumber === reqItem.batchNumber || b.id === reqItem.batchNumber || (reqItem.batchId && b.id === reqItem.batchId))
-      );
-
-      if (!batch) {
-        const avail = Math.max(rm?.stockKushtia || 0, reqItem.quantity, 100);
-        batch = {
-          id: reqItem.batchId || `batch-${Date.now()}-${Math.floor(Math.random() * 10000)}-${matCodeStr}`,
-          batchNumber: reqItem.batchNumber || `KUS-B2610-${issueData.productionOrderNumber?.replace(/\D/g, '').slice(-2) || '01'}`,
-          batchBarcode: reqItem.batchBarcode || `BC-${matCodeStr}-${Date.now().toString().slice(-4)}`,
-          materialId: matIdStr,
-          materialCode: matCodeStr,
-          materialName: matNameStr,
-          unit: matUnitStr,
-          supplierId: 'SUP-KUSHTIA',
-          supplierName: 'Kushtia Factory Store',
-          purchaseDate: issueDate,
-          unitPurchaseRate: unitRate,
-          receivedQty: avail,
-          issuedQty: 0,
-          availableQty: avail,
-          warehouseId: issueData.warehouseId || 'WH-KUSHTIA',
-          warehouseName: issueData.warehouseName || 'Kushtia Assembly Plant',
-          status: 'Active',
-        };
-        updatedBatches.push(batch);
+    const ensureUniqueBatchNumber = (desired: string | undefined, matCode: string): string => {
+      const cleanMat = matCode.replace(/[^a-zA-Z0-9-]/g, '') || 'RM';
+      const usedSet = new Set(updatedBatches.map((b) => (b.batchNumber || '').trim().toLowerCase()));
+      let candidate = (desired || '').trim();
+      if (!candidate || usedSet.has(candidate.toLowerCase())) {
+        const initCand = `RM-BATCH-INIT-${cleanMat}`;
+        candidate = !usedSet.has(initCand.toLowerCase()) ? initCand : `${candidate || initCand}-${cleanMat}`;
       }
-      if (batch.availableQty < reqItem.quantity) {
-        batch.availableQty = reqItem.quantity;
+      let suffix = 1;
+      const base = candidate;
+      while (usedSet.has(candidate.toLowerCase())) {
+        candidate = `${base}-${suffix++}`;
       }
-    }
+      return candidate;
+    };
+
+    const ensureUniqueBatchBarcode = (desired: string | undefined, batchNumber: string, matCode: string): string => {
+      const cleanMat = matCode.replace(/[^a-zA-Z0-9-]/g, '') || 'RM';
+      const usedSet = new Set(updatedBatches.map((b) => (b.batchBarcode || '').trim().toLowerCase()));
+      let candidate = (desired || `BC-${batchNumber}`).trim();
+      if (usedSet.has(candidate.toLowerCase())) {
+        candidate = `BC-${batchNumber}-${cleanMat}`;
+      }
+      let suffix = 1;
+      const base = candidate;
+      while (usedSet.has(candidate.toLowerCase())) {
+        candidate = `${base}-${suffix++}`;
+      }
+      return candidate;
+    };
+
+    // Track pre-issue prior historical issued qty for unbatched bulk materials so received = avail + issued holds
+    const priorIssuedByCode = new Map<string, number>();
+    materialIssues.forEach((mi) => {
+      (mi.items || []).forEach((it) => {
+        const key = (it.materialCode || it.materialId || '').trim().toUpperCase();
+        if (key) {
+          priorIssuedByCode.set(key, (priorIssuedByCode.get(key) || 0) + (Number(it.issuedQty) || 0));
+        }
+      });
+    });
 
     const issueLineItems: MaterialIssueItem[] = [];
     const newMovements: InventoryMovement[] = [];
     const newConsumptions: ProductionConsumption[] = [];
+    const totalDeductedByMatCode = new Map<string, number>();
     let totalMaterialCost = 0;
     let totalIssuedQty = 0;
 
@@ -8438,108 +8537,221 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       );
       const matIdStr = String(rm?.id || reqItem.materialId);
       const matCodeStr = rm?.code || reqItem.materialCode || 'RM';
+      const matCodeKey = matCodeStr.trim().toUpperCase();
       const matNameStr = rm?.name || reqItem.materialName || 'Raw Material';
       const matUnitStr = rm?.unit || reqItem.unit || 'PCS';
+      const unitRateDefault = Number(reqItem.unitCostBDT) || rm?.lastPurchaseUnitCostBDT || rm?.standardCostBDT || 0;
 
-      // Find the batch strictly for this specific material
-      let batchIndex = updatedBatches.findIndex(
-        (b) =>
-          isBatchForMaterial(b, matIdStr, matCodeStr, matNameStr) &&
-          (b.batchNumber === reqItem.batchNumber || b.id === reqItem.batchNumber || (reqItem.batchId && b.id === reqItem.batchId))
+      // Build ordered candidate indices for this material (FIFO by purchaseDate asc, id asc)
+      const materialBatchIndices = updatedBatches
+        .map((b, index) => ({ b, index }))
+        .filter(({ b }) => isBatchForMaterial(b, matIdStr, matCodeStr, matNameStr))
+        .sort((x, y) => {
+          const dA = new Date(x.b.purchaseDate || '2026-01-01').getTime();
+          const dB = new Date(y.b.purchaseDate || '2026-01-01').getTime();
+          if (dA !== dB) return dA - dB;
+          return String(x.b.id).localeCompare(String(y.b.id), undefined, { numeric: true });
+        });
+
+      // Exact requested batch match strictly owned by this material
+      let primaryEntry = materialBatchIndices.find(
+        ({ b }) =>
+          (reqItem.batchId && String(b.id) === String(reqItem.batchId)) ||
+          (reqItem.batchNumber && b.batchNumber === reqItem.batchNumber)
       );
 
-      // Fallback: any batch for this specific material
-      if (batchIndex === -1) {
-        batchIndex = updatedBatches.findIndex((b) => isBatchForMaterial(b, matIdStr, matCodeStr, matNameStr));
+      // Next, oldest active FIFO batch for this material
+      if (!primaryEntry) {
+        primaryEntry = materialBatchIndices.find(({ b }) => Number(b.availableQty) > 0 && b.status !== 'Quarantined');
       }
 
-      const batch = batchIndex >= 0 ? updatedBatches[batchIndex] : null;
-      const unitRate = Number(reqItem.unitCostBDT) || (batch ? batch.unitPurchaseRate : 0) || rm?.lastPurchaseUnitCostBDT || rm?.standardCostBDT || 0;
-      const itemCost = reqItem.quantity * unitRate;
-      totalMaterialCost += itemCost;
-      totalIssuedQty += reqItem.quantity;
+      // If no real batch exists for this material in inventoryBatches yet, materialize an opening batch
+      if (!primaryEntry) {
+        const alreadyDeductedThisCall = totalDeductedByMatCode.get(matCodeKey) || 0;
+        const preIssueAvail = Math.max(0, Number(rm?.stockKushtia || 0) - alreadyDeductedThisCall);
+        const priorIssued = priorIssuedByCode.get(matCodeKey) || 0;
+        const requestedQty = Number(reqItem.quantity) || 0;
+        const baseAvail = preIssueAvail > 0 ? preIssueAvail : requestedQty;
+        const uniqueBatchNumber = ensureUniqueBatchNumber(
+          reqItem.batchNumber && !reqItem.batchNumber.startsWith('KUS-B') ? reqItem.batchNumber : `RM-BATCH-INIT-${matCodeStr}`,
+          matCodeStr
+        );
+        const uniqueBatchBarcode = ensureUniqueBatchBarcode(reqItem.batchBarcode, uniqueBatchNumber, matCodeStr);
 
-      const newAvail = batch ? Math.max(0, batch.availableQty - reqItem.quantity) : 0;
-      const newIssued = batch ? (batch.issuedQty + reqItem.quantity) : reqItem.quantity;
+        const createdBatch: InventoryBatch = {
+          id: `batch-init-${Date.now()}-${Math.floor(Math.random() * 10000)}-${matCodeStr}`,
+          batchNumber: uniqueBatchNumber,
+          batchBarcode: uniqueBatchBarcode,
+          materialId: matIdStr,
+          materialCode: matCodeStr,
+          materialName: matNameStr,
+          unit: matUnitStr,
+          supplierId: 'SUP-KUSHTIA',
+          supplierName: rm?.preferredSupplier || 'Kushtia Factory Store',
+          purchaseDate: rm?.createdAt ? String(rm.createdAt).substring(0, 10) : issueDate,
+          unitPurchaseRate: unitRateDefault,
+          receivedQty: baseAvail + priorIssued,
+          issuedQty: priorIssued,
+          availableQty: baseAvail,
+          warehouseId: issueData.warehouseId || 'WH-KUSHTIA',
+          warehouseName: issueData.warehouseName || 'Kushtia Assembly Plant',
+          status: baseAvail > 0 ? 'Active' : 'Depleted',
+          grnRef: 'BULK-UPLOAD-STOCK',
+          remarks: `Auto-initialized batch on production issue ${issueNumber}`,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        updatedBatches.push(createdBatch);
+        createdBatchNumbers.add(createdBatch.batchNumber);
+        primaryEntry = { b: createdBatch, index: updatedBatches.length - 1 };
+      }
 
-      if (batch && batchIndex >= 0) {
-        updatedBatches[batchIndex] = {
-          ...batch,
+      const qtyRequested = Number(reqItem.quantity) || 0;
+      let remainingToConsume = qtyRequested;
+
+      // Consume across FIFO batches if not manually locked to a single batch override & multiple active batches exist
+      const consumeQueue: { index: number; takeQty: number }[] = [];
+      const primaryBatch = updatedBatches[primaryEntry.index];
+      const primaryAvail = Math.max(0, Number(primaryBatch.availableQty) || 0);
+
+      if (!reqItem.isFifoOverride && remainingToConsume > primaryAvail && materialBatchIndices.length > 1) {
+        if (primaryAvail > 0) {
+          consumeQueue.push({ index: primaryEntry.index, takeQty: primaryAvail });
+          remainingToConsume -= primaryAvail;
+        }
+        for (const candidate of materialBatchIndices) {
+          if (remainingToConsume <= 0) break;
+          if (candidate.index === primaryEntry.index) continue;
+          const candBatch = updatedBatches[candidate.index];
+          if (candBatch.status === 'Quarantined') continue;
+          const candAvail = Math.max(0, Number(candBatch.availableQty) || 0);
+          if (candAvail <= 0) continue;
+          const take = Math.min(candAvail, remainingToConsume);
+          consumeQueue.push({ index: candidate.index, takeQty: take });
+          remainingToConsume -= take;
+        }
+        if (remainingToConsume > 0) {
+          // Remaining authorized shortfall goes onto the primary batch
+          const existingPrimaryEntry = consumeQueue.find((q) => q.index === primaryEntry!.index);
+          if (existingPrimaryEntry) {
+            existingPrimaryEntry.takeQty += remainingToConsume;
+          } else {
+            consumeQueue.push({ index: primaryEntry.index, takeQty: remainingToConsume });
+          }
+          remainingToConsume = 0;
+        }
+      } else {
+        consumeQueue.push({ index: primaryEntry.index, takeQty: qtyRequested });
+      }
+
+      for (const qItem of consumeQueue) {
+        const targetBatch = updatedBatches[qItem.index];
+        const qty = qItem.takeQty;
+        const unitRate = Number(reqItem.unitCostBDT) || Number(targetBatch.unitPurchaseRate) || unitRateDefault;
+        const itemCost = qty * unitRate;
+        totalMaterialCost += itemCost;
+        totalIssuedQty += qty;
+
+        const newAvail = Math.max(0, Number(targetBatch.availableQty || 0) - qty);
+        const newIssued = Number(targetBatch.issuedQty || 0) + qty;
+
+        updatedBatches[qItem.index] = {
+          ...targetBatch,
           availableQty: newAvail,
           issuedQty: newIssued,
           status: newAvail === 0 ? 'Depleted' : 'Active',
           updatedAt: new Date().toISOString(),
         };
+        if (!createdBatchNumbers.has(targetBatch.batchNumber)) {
+          modifiedBatchNumbers.add(targetBatch.batchNumber);
+        }
+
+        totalDeductedByMatCode.set(matCodeKey, (totalDeductedByMatCode.get(matCodeKey) || 0) + qty);
+
+        const lineBatchNumber = targetBatch.batchNumber;
+        const lineBatchBarcode = targetBatch.batchBarcode || `BC-${matCodeStr}`;
+
+        issueLineItems.push({
+          id: `mii-${Date.now()}-${issueLineItems.length}`,
+          materialId: matIdStr,
+          materialCode: matCodeStr,
+          materialName: matNameStr,
+          batchNumber: lineBatchNumber,
+          batchBarcode: lineBatchBarcode,
+          unit: matUnitStr,
+          requestedQty: qty,
+          issuedQty: qty,
+          unitCostBDT: unitRate,
+          totalMaterialCostBDT: itemCost,
+          isFifoOverride: reqItem.isFifoOverride,
+          overrideReason: reqItem.overrideReason,
+        });
+
+        newMovements.push({
+          id: `mov-${Date.now()}-${newMovements.length}`,
+          date: issueDate,
+          timestamp: new Date().toISOString(),
+          materialId: matIdStr,
+          materialCode: matCodeStr,
+          materialName: matNameStr,
+          batchNumber: lineBatchNumber,
+          batchBarcode: lineBatchBarcode,
+          movementType: 'PRODUCTION_CONSUMPTION',
+          quantity: -qty,
+          unitCostBDT: unitRate,
+          totalValueBDT: itemCost,
+          referenceNo: issueData.productionOrderNumber,
+          sourceWarehouseId: issueData.warehouseId,
+          sourceWarehouseName: issueData.warehouseName,
+          performedBy: issueData.issuedBy,
+          notes: `Issued to ${issueData.productionOrderNumber}${reqItem.isFifoOverride ? ` [FIFO Override: ${reqItem.overrideReason}]` : ''}`,
+          balanceAfter: newAvail,
+          createdAt: new Date().toISOString(),
+        });
+
+        newConsumptions.push({
+          id: `pcns-${Date.now()}-${newConsumptions.length}`,
+          productionOrderId: issueData.productionOrderId,
+          productionOrderNumber: issueData.productionOrderNumber,
+          materialId: matIdStr,
+          materialCode: matCodeStr,
+          materialName: matNameStr,
+          batchNumber: lineBatchNumber,
+          batchBarcode: lineBatchBarcode,
+          quantity: qty,
+          unitCostBDT: unitRate,
+          totalCostBDT: itemCost,
+          date: issueDate,
+          issuedBy: issueData.issuedBy,
+        });
       }
+    }
 
-      const lineBatchNumber = reqItem.batchNumber || batch?.batchNumber || `KUS-B2610-${issueData.productionOrderNumber?.replace(/\D/g, '').slice(-2) || '01'}`;
-      const lineBatchBarcode = reqItem.batchBarcode || batch?.batchBarcode || `BC-${matCodeStr}`;
-
-      issueLineItems.push({
-        id: `mii-${Date.now()}-${issueLineItems.length}`,
-        materialId: matIdStr,
-        materialCode: matCodeStr,
-        materialName: matNameStr,
-        batchNumber: lineBatchNumber,
-        batchBarcode: lineBatchBarcode,
-        unit: matUnitStr,
-        requestedQty: reqItem.quantity,
-        issuedQty: reqItem.quantity,
-        unitCostBDT: unitRate,
-        totalMaterialCostBDT: itemCost,
-        isFifoOverride: reqItem.isFifoOverride,
-        overrideReason: reqItem.overrideReason,
+    // Deduct aggregated issued quantities from rawMaterials stock in React state & compute Supabase targets
+    const rmStockUpdatesForSupabase: { id: number | null; code: string; newStock: number }[] = [];
+    if (totalDeductedByMatCode.size > 0) {
+      const updatedRms = rawMaterials.map((r) => {
+        const key = (r.code || '').trim().toUpperCase();
+        const deducted = totalDeductedByMatCode.get(key) || 0;
+        if (deducted <= 0) return r;
+        const newKushtia = Math.max(0, Number(r.stockKushtia || 0) - deducted);
+        const newTotal = Math.max(0, Number(r.totalAvailableStock ?? r.stockKushtia ?? 0) - deducted);
+        rmStockUpdatesForSupabase.push({
+          id: /^\d+$/.test(String(r.id)) ? Number(r.id) : null,
+          code: r.code,
+          newStock: newKushtia,
+        });
+        return {
+          ...r,
+          stockKushtia: newKushtia,
+          totalAvailableStock: newTotal,
+          updatedAt: new Date().toISOString(),
+        };
       });
-
-      newMovements.push({
-        id: `mov-${Date.now()}-${newMovements.length}`,
-        date: issueDate,
-        materialId: matIdStr,
-        materialCode: matCodeStr,
-        materialName: matNameStr,
-        batchNumber: lineBatchNumber,
-        batchBarcode: lineBatchBarcode,
-        movementType: 'PRODUCTION_CONSUMPTION',
-        quantity: -reqItem.quantity,
-        unitCostBDT: unitRate,
-        totalValueBDT: itemCost,
-        referenceNo: issueData.productionOrderNumber,
-        sourceWarehouseId: issueData.warehouseId,
-        sourceWarehouseName: issueData.warehouseName,
-        performedBy: issueData.issuedBy,
-        notes: `Issued to ${issueData.productionOrderNumber}${reqItem.isFifoOverride ? ` [FIFO Override: ${reqItem.overrideReason}]` : ''}`,
-        balanceAfter: newAvail,
-        createdAt: new Date().toISOString(),
-      });
-
-      newConsumptions.push({
-        id: `pcns-${Date.now()}-${newConsumptions.length}`,
-        productionOrderId: issueData.productionOrderId,
-        productionOrderNumber: issueData.productionOrderNumber,
-        materialId: matIdStr,
-        materialCode: matCodeStr,
-        materialName: matNameStr,
-        batchNumber: lineBatchNumber,
-        batchBarcode: lineBatchBarcode,
-        quantity: reqItem.quantity,
-        unitCostBDT: unitRate,
-        totalCostBDT: itemCost,
-        date: issueDate,
-        issuedBy: issueData.issuedBy,
-      });
-
-      // Deduct from rawMaterials stock for this specific raw material
-      setRawMaterials((prevRms) =>
-        prevRms.map((r) =>
-          String(r.id) === matIdStr || r.code === matCodeStr
-            ? {
-                ...r,
-                stockKushtia: Math.max(0, (r.stockKushtia || 0) - reqItem.quantity),
-                totalAvailableStock: Math.max(0, (r.totalAvailableStock || 0) - reqItem.quantity),
-              }
-            : r
-        )
-      );
+      setRawMaterials(updatedRms);
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('ensec_raw_materials', JSON.stringify(updatedRms));
+      }
     }
 
     const newIssue: MaterialIssue = {
@@ -8648,6 +8860,19 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           }
         }
 
+        const resolveNumericMatId = (matId?: string, matCode?: string, matName?: string): number | null => {
+          const rm = rawMaterials.find(
+            (m) =>
+              (matId && String(m.id) === String(matId)) ||
+              (matId && m.code === matId) ||
+              (matCode && m.code === matCode) ||
+              (matName && m.name?.trim().toLowerCase() === matName.trim().toLowerCase())
+          );
+          if (rm && /^\d+$/.test(String(rm.id))) return Number(rm.id);
+          if (matId && /^\d+$/.test(String(matId))) return Number(matId);
+          return null;
+        };
+
         // 1. Insert into material_issues table
         const issuePayload: any = {
           issue_number: issueNumber,
@@ -8673,7 +8898,6 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         if (issueErr) {
           console.warn('Supabase material_issues insert notice:', issueErr.message);
-          // If foreign key constraint failed on warehouse_id, retry with null
           if (issueErr.code === '23503' && issuePayload.warehouse_id !== null) {
             issuePayload.warehouse_id = null;
             const retryRes = await sb.from('material_issues').insert(issuePayload).select('id');
@@ -8691,46 +8915,26 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         // 2. Insert line items into material_issue_items
         if (dbIssueId && issueLineItems.length > 0) {
           try {
-            const lineItemsPayload = issueLineItems.map((item) => {
-              let matId: number | null = null;
-              const rm = rawMaterials.find(
-                (m) =>
-                  String(m.id) === String(item.materialId) ||
-                  m.code === item.materialId ||
-                  m.code === item.materialCode ||
-                  m.name?.trim().toLowerCase() === item.materialName?.trim().toLowerCase()
-              );
-              if (rm && /^\d+$/.test(String(rm.id))) {
-                matId = Number(rm.id);
-              } else if (/^\d+$/.test(String(item.materialId))) {
-                matId = Number(item.materialId);
-              }
-
-              return {
-                issue_id: dbIssueId,
-                material_id: matId, // null if not in raw_materials to prevent foreign key violation
-                material_code: item.materialCode,
-                material_name: item.materialName,
-                batch_number: item.batchNumber,
-                batch_barcode: item.batchBarcode || `BC-${item.batchNumber}`,
-                unit: item.unit || 'Pieces',
-                requested_qty: Number(item.requestedQty) || 0,
-                issued_qty: Number(item.issuedQty) || 0,
-                unit_cost_bdt: Number(item.unitCostBDT) || 0,
-                total_material_cost_bdt: Number(item.totalMaterialCostBDT) || 0,
-                is_fifo_override: Boolean(item.isFifoOverride),
-                override_reason: item.overrideReason || null,
-              };
-            });
+            const lineItemsPayload = issueLineItems.map((item) => ({
+              issue_id: dbIssueId,
+              material_id: resolveNumericMatId(item.materialId, item.materialCode, item.materialName),
+              material_code: item.materialCode,
+              material_name: item.materialName,
+              batch_number: item.batchNumber,
+              batch_barcode: item.batchBarcode || `BC-${item.batchNumber}`,
+              unit: item.unit || 'Pieces',
+              requested_qty: Number(item.requestedQty) || 0,
+              issued_qty: Number(item.issuedQty) || 0,
+              unit_cost_bdt: Number(item.unitCostBDT) || 0,
+              total_material_cost_bdt: Number(item.totalMaterialCostBDT) || 0,
+              is_fifo_override: Boolean(item.isFifoOverride),
+              override_reason: item.overrideReason || null,
+            }));
 
             const { error: liErr } = await sb.from('material_issue_items').insert(lineItemsPayload);
-            if (liErr) {
-              console.warn('Supabase material_issue_items insert notice:', liErr.message);
-              if (liErr.code === '23503') {
-                // Retry with material_id: null in case any specific material ID violated FK
-                const safePayload = lineItemsPayload.map((li) => ({ ...li, material_id: null }));
-                await sb.from('material_issue_items').insert(safePayload);
-              }
+            if (liErr && liErr.code === '23503') {
+              const safePayload = lineItemsPayload.map((li) => ({ ...li, material_id: null }));
+              await sb.from('material_issue_items').insert(safePayload);
             }
           } catch (itemErr) {
             console.warn('Supabase material_issue_items insert notice:', itemErr);
@@ -8740,36 +8944,20 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         // 3. Insert into production_consumption
         if (newConsumptions.length > 0) {
           try {
-            const consPayload = newConsumptions.map((c) => {
-              let matId: number | null = null;
-              const rm = rawMaterials.find(
-                (m) =>
-                  String(m.id) === String(c.materialId) ||
-                  m.code === c.materialId ||
-                  m.code === c.materialCode ||
-                  m.name?.trim().toLowerCase() === c.materialName?.trim().toLowerCase()
-              );
-              if (rm && /^\d+$/.test(String(rm.id))) {
-                matId = Number(rm.id);
-              } else if (/^\d+$/.test(String(c.materialId))) {
-                matId = Number(c.materialId);
-              }
-
-              return {
-                production_order_id: String(c.productionOrderId),
-                production_order_number: c.productionOrderNumber,
-                material_id: matId,
-                material_code: c.materialCode,
-                material_name: c.materialName,
-                batch_number: c.batchNumber,
-                batch_barcode: c.batchBarcode,
-                quantity: Number(c.quantity) || 0,
-                unit_cost_bdt: Number(c.unitCostBDT) || 0,
-                total_cost_bdt: Number(c.totalCostBDT) || 0,
-                date: c.date,
-                issued_by: c.issuedBy,
-              };
-            });
+            const consPayload = newConsumptions.map((c) => ({
+              production_order_id: String(c.productionOrderId),
+              production_order_number: c.productionOrderNumber,
+              material_id: resolveNumericMatId(c.materialId, c.materialCode, c.materialName),
+              material_code: c.materialCode,
+              material_name: c.materialName,
+              batch_number: c.batchNumber,
+              batch_barcode: c.batchBarcode,
+              quantity: Number(c.quantity) || 0,
+              unit_cost_bdt: Number(c.unitCostBDT) || 0,
+              total_cost_bdt: Number(c.totalCostBDT) || 0,
+              date: c.date,
+              issued_by: c.issuedBy,
+            }));
 
             const { error: consErr } = await sb.from('production_consumption').insert(consPayload);
             if (consErr && consErr.code === '23503') {
@@ -8799,29 +8987,120 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           console.warn('Supabase production_orders update notice:', poErr);
         }
 
-        // 5. Deduct raw_materials stock in database
-        for (const item of issueLineItems) {
+        // 5. Persist created & modified inventory_batches (issued_qty, available_qty, status) to Supabase
+        const createdBatchList = updatedBatches.filter((b) => createdBatchNumbers.has(b.batchNumber));
+        if (createdBatchList.length > 0) {
+          const insertBatchesPayload = createdBatchList.map((b) => ({
+            batch_number: b.batchNumber,
+            batch_barcode: b.batchBarcode,
+            material_id: resolveNumericMatId(b.materialId, b.materialCode, b.materialName),
+            material_code: b.materialCode,
+            material_name: b.materialName,
+            unit: b.unit || 'Pieces',
+            supplier_id: b.supplierId && /^\d+$/.test(String(b.supplierId)) ? Number(b.supplierId) : null,
+            supplier_name: b.supplierName || 'Kushtia Factory Store',
+            purchase_date: b.purchaseDate || issueDate,
+            unit_purchase_rate: Number(b.unitPurchaseRate) || 0,
+            received_qty: Number(b.receivedQty) || 0,
+            issued_qty: Number(b.issuedQty) || 0,
+            available_qty: Math.max(0, Number(b.availableQty) || 0),
+            warehouse_id: whId,
+            warehouse_name: b.warehouseName || 'Kushtia Assembly Plant',
+            status: b.status || 'Active',
+            grn_ref: b.grnRef || 'BULK-UPLOAD-STOCK',
+            remarks: b.remarks || null,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          }));
           try {
-            const isNumericMat = /^\d+$/.test(item.materialId);
-            const targetRm = rawMaterials.find(
-              (m) => m.id === item.materialId || m.code === item.materialId || m.code === item.materialCode
-            );
-            const newStockKushtia = Math.max(0, (targetRm?.stockKushtia || 0) - item.issuedQty);
-            const newTotalStock = Math.max(0, (targetRm?.totalAvailableStock || 0) - item.issuedQty);
+            const { error: cbErr } = await sb.from('inventory_batches').insert(insertBatchesPayload);
+            if (cbErr && cbErr.code === '23503') {
+              const safeCb = insertBatchesPayload.map((bp) => ({ ...bp, material_id: null, warehouse_id: null, supplier_id: null }));
+              await sb.from('inventory_batches').insert(safeCb);
+            } else if (cbErr && cbErr.code === '23505') {
+              for (const bp of insertBatchesPayload) {
+                await sb
+                  .from('inventory_batches')
+                  .update({
+                    issued_qty: bp.issued_qty,
+                    available_qty: bp.available_qty,
+                    status: bp.status,
+                    updated_at: new Date().toISOString(),
+                  })
+                  .eq('batch_number', bp.batch_number);
+              }
+            }
+          } catch (cbEx) {
+            console.warn('Supabase created inventory_batches sync notice:', cbEx);
+          }
+        }
 
-            const targetId = targetRm && /^\d+$/.test(String(targetRm.id))
-              ? Number(targetRm.id)
-              : (/^\d+$/.test(String(item.materialId)) ? Number(item.materialId) : null);
-
-            const updateData = {
-              stock_kushtia: newStockKushtia,
-              updated_at: new Date().toISOString()
+        const modifiedBatchList = updatedBatches.filter((b) => modifiedBatchNumbers.has(b.batchNumber));
+        for (const batch of modifiedBatchList) {
+          try {
+            const batchPayload = {
+              available_qty: Math.max(0, Number(batch.availableQty) || 0),
+              issued_qty: Number(batch.issuedQty) || 0,
+              status: batch.status || (Number(batch.availableQty) <= 0 ? 'Depleted' : 'Active'),
+              updated_at: new Date().toISOString(),
             };
+            if (/^\d+$/.test(String(batch.id))) {
+              await sb.from('inventory_batches').update(batchPayload).eq('id', Number(batch.id));
+            } else {
+              await sb
+                .from('inventory_batches')
+                .update(batchPayload)
+                .eq('batch_number', batch.batchNumber)
+                .eq('material_code', batch.materialCode);
+            }
+          } catch (mbEx) {
+            console.warn('Supabase modified inventory_batches sync notice:', mbEx);
+          }
+        }
 
-            if (targetId !== null) {
-              await sb.from('raw_materials').update(updateData).eq('id', targetId);
-            } else if (item.materialCode || targetRm?.code) {
-              await sb.from('raw_materials').update(updateData).eq('code', item.materialCode || targetRm?.code);
+        // 6. Persist inventory_movements to Supabase
+        if (newMovements.length > 0) {
+          try {
+            const movPayload = newMovements.map((m) => ({
+              date: m.date,
+              material_id: resolveNumericMatId(m.materialId, m.materialCode, m.materialName),
+              material_code: m.materialCode,
+              material_name: m.materialName,
+              batch_number: m.batchNumber,
+              batch_barcode: m.batchBarcode || null,
+              movement_type: m.movementType,
+              quantity: Number(m.quantity) || 0,
+              unit_cost_bdt: Number(m.unitCostBDT) || 0,
+              total_value_bdt: Number(m.totalValueBDT) || 0,
+              reference_no: m.referenceNo,
+              source_warehouse_id: whId,
+              source_warehouse_name: m.sourceWarehouseName || 'Kushtia Assembly Plant',
+              performed_by: m.performedBy,
+              balance_after: Number(m.balanceAfter) || 0,
+              notes: m.notes || null,
+              created_at: new Date().toISOString(),
+            }));
+            const { error: mErr } = await sb.from('inventory_movements').insert(movPayload);
+            if (mErr && mErr.code === '23503') {
+              const safeMov = movPayload.map((mp) => ({ ...mp, material_id: null, source_warehouse_id: null }));
+              await sb.from('inventory_movements').insert(safeMov);
+            }
+          } catch (mEx) {
+            console.warn('Supabase inventory_movements insert notice:', mEx);
+          }
+        }
+
+        // 7. Deduct aggregated raw_materials stock in Supabase database
+        for (const rmUpd of rmStockUpdatesForSupabase) {
+          try {
+            const updateData = {
+              stock_kushtia: rmUpd.newStock,
+              updated_at: new Date().toISOString(),
+            };
+            if (rmUpd.id !== null) {
+              await sb.from('raw_materials').update(updateData).eq('id', rmUpd.id);
+            } else if (rmUpd.code) {
+              await sb.from('raw_materials').update(updateData).eq('code', rmUpd.code);
             }
           } catch {}
         }
@@ -8829,9 +9108,12 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         console.warn('Supabase material issue sync notice:', dbErr?.message || dbErr);
       }
 
-      try {
-        await refreshMaterialIssues();
-      } catch {}
+      await Promise.allSettled([
+        refreshMaterialIssues(),
+        refreshInventoryBatches(),
+        refreshInventoryMovements(),
+        refreshRawMaterials(),
+      ]);
     }
 
     addAuditLog(
@@ -8898,24 +9180,37 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return false;
     };
 
+    const isBatchForMaterial = (b: InventoryBatch, matId: string, matCode?: string, matName?: string) => {
+      const bMatId = String(b.materialId || '').trim().toLowerCase();
+      const bMatCode = String(b.materialCode || '').trim().toLowerCase();
+      const targetId = String(matId).trim().toLowerCase();
+      const targetCode = String(matCode || '').trim().toLowerCase();
+      const targetName = String(matName || '').trim().toLowerCase();
+
+      if (bMatId && bMatId === targetId) return true;
+      if (targetCode && bMatCode && bMatCode === targetCode) return true;
+      if (bMatId && targetCode && bMatId === targetCode) return true;
+      if (bMatCode && targetId && bMatCode === targetId) return true;
+      if (targetName && b.materialName && b.materialName.trim().toLowerCase() === targetName) return true;
+      return false;
+    };
+
     // 2. Adjust rawMaterials stock by net difference (delta) synchronously
     const stockAdjustments: { material: RawMaterial; delta: number; oldStock: number; newStock: number }[] = [];
     const updatedRawMaterials = rawMaterials.map((rm) => {
-      // Previous total quantity issued for this material
       const oldQty = oldItems
         .filter((item) => matchesMaterial(rm, item.materialId, item.materialCode, item.materialName))
         .reduce((sum, item) => sum + (Number(item.issuedQty) || 0), 0);
 
-      // New total quantity to be issued for this material
       const newQty = issueData.items
         .filter((item) => matchesMaterial(rm, item.materialId, item.materialCode, item.materialName))
         .reduce((sum, item) => sum + (Number(item.quantity) || 0), 0);
 
-      const delta = newQty - oldQty; // positive = deduct additional from plant stock; negative = restore to plant stock
+      const delta = newQty - oldQty;
 
       if (delta !== 0 || oldQty > 0 || newQty > 0) {
         const currentKushtia = Number(rm.stockKushtia || 0);
-        const currentTotal = Number(rm.totalAvailableStock || 0);
+        const currentTotal = Number(rm.totalAvailableStock ?? rm.stockKushtia ?? 0);
         const updatedKushtia = Math.max(0, currentKushtia - delta);
         const updatedTotal = Math.max(0, currentTotal - delta);
 
@@ -8941,14 +9236,18 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       localStorage.setItem('ensec_raw_materials', JSON.stringify(updatedRawMaterials));
     }
 
-    // 3. Adjust inventoryBatches: restore old batch quantities and deduct new ones
-    const updatedBatches = inventoryBatches.map((batch) => {
+    // 3. Adjust inventoryBatches strictly scoped per material: restore old batch quantities and deduct new ones
+    const modifiedBatchNumbers = new Set<string>();
+    const createdBatchNumbers = new Set<string>();
+
+    const updatedBatches: InventoryBatch[] = inventoryBatches.map((batch) => {
       const bNum = (batch.batchNumber || '').trim().toLowerCase();
       const bBarcode = (batch.batchBarcode || '').trim().toLowerCase();
       const bId = String(batch.id || '').trim().toLowerCase();
 
       const oldBatchQty = oldItems
         .filter((item) => {
+          if (!isBatchForMaterial(batch, item.materialId, item.materialCode, item.materialName)) return false;
           if (item.batchNumber && item.batchNumber.trim().toLowerCase() === bNum) return true;
           if (item.batchBarcode && item.batchBarcode.trim().toLowerCase() === bBarcode) return true;
           if ((item as any).batchId && String((item as any).batchId).trim().toLowerCase() === bId) return true;
@@ -8958,6 +9257,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       const newBatchQty = issueData.items
         .filter((item) => {
+          if (!isBatchForMaterial(batch, item.materialId, item.materialCode, item.materialName)) return false;
           if (item.batchNumber && item.batchNumber.trim().toLowerCase() === bNum) return true;
           if (item.batchBarcode && item.batchBarcode.trim().toLowerCase() === bBarcode) return true;
           if (item.batchId && String(item.batchId).trim().toLowerCase() === bId) return true;
@@ -8969,6 +9269,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (batchDelta !== 0) {
         const newAvail = Math.max(0, Number(batch.availableQty) - batchDelta);
         const newIssued = Math.max(0, Number(batch.issuedQty || 0) + batchDelta);
+        modifiedBatchNumbers.add(batch.batchNumber);
         return {
           ...batch,
           availableQty: newAvail,
@@ -8977,43 +9278,106 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           updatedAt: new Date().toISOString(),
         };
       }
-      return batch;
+      return { ...batch };
     });
 
-    // Ensure batches exist for any new items that didn't match existing batches
-    for (const newItem of issueData.items) {
-      const exists = updatedBatches.some(
-        (b) =>
-          (newItem.batchId && b.id === newItem.batchId) ||
-          (newItem.batchNumber && b.batchNumber === newItem.batchNumber) ||
-          (newItem.batchBarcode && b.batchBarcode === newItem.batchBarcode)
+    const ensureUniqueUpdateBatchNumber = (desired: string | undefined, matCode: string): string => {
+      const cleanMat = matCode.replace(/[^a-zA-Z0-9-]/g, '') || 'RM';
+      const usedSet = new Set(updatedBatches.map((b) => (b.batchNumber || '').trim().toLowerCase()));
+      let candidate = (desired || '').trim();
+      if (!candidate || usedSet.has(candidate.toLowerCase())) {
+        const initCand = `RM-BATCH-INIT-${cleanMat}`;
+        candidate = !usedSet.has(initCand.toLowerCase()) ? initCand : `${candidate || initCand}-${cleanMat}`;
+      }
+      let suffix = 1;
+      const base = candidate;
+      while (usedSet.has(candidate.toLowerCase())) {
+        candidate = `${base}-${suffix++}`;
+      }
+      return candidate;
+    };
+
+    const ensureUniqueUpdateBatchBarcode = (desired: string | undefined, batchNumber: string, matCode: string): string => {
+      const cleanMat = matCode.replace(/[^a-zA-Z0-9-]/g, '') || 'RM';
+      const usedSet = new Set(updatedBatches.map((b) => (b.batchBarcode || '').trim().toLowerCase()));
+      let candidate = (desired || `BC-${batchNumber}`).trim();
+      if (usedSet.has(candidate.toLowerCase())) {
+        candidate = `BC-${batchNumber}-${cleanMat}`;
+      }
+      let suffix = 1;
+      const base = candidate;
+      while (usedSet.has(candidate.toLowerCase())) {
+        candidate = `${base}-${suffix++}`;
+      }
+      return candidate;
+    };
+
+    // Ensure every revised item resolves to a real material-owned batch (creating unique DB-ready batch for previously unbatched items)
+    const resolvedItemBatchMap = new Map<number, InventoryBatch>();
+    issueData.items.forEach((newItem, idx) => {
+      const rm = updatedRawMaterials.find(
+        (m) => matchesMaterial(m, newItem.materialId, newItem.materialCode, newItem.materialName)
       );
-      if (!exists) {
-        const rm = updatedRawMaterials.find(
-          (m) => String(m.id) === String(newItem.materialId) || m.code === newItem.materialCode
+      const matIdStr = String(rm?.id || newItem.materialId);
+      const matCodeStr = rm?.code || newItem.materialCode || 'RM';
+      const matNameStr = rm?.name || newItem.materialName || 'Raw Material';
+
+      let matchedBatch = updatedBatches.find(
+        (b) =>
+          isBatchForMaterial(b, matIdStr, matCodeStr, matNameStr) &&
+          ((newItem.batchId && String(b.id) === String(newItem.batchId)) ||
+            (newItem.batchNumber && b.batchNumber === newItem.batchNumber) ||
+            (newItem.batchBarcode && b.batchBarcode === newItem.batchBarcode))
+      );
+
+      if (!matchedBatch) {
+        // Compute total issued across all other active issues + this revised issue for this material
+        const otherIssuesQty = materialIssues
+          .filter((mi) => mi.id !== existingIssue.id && mi.issueNumber !== existingIssue.issueNumber)
+          .flatMap((mi) => mi.items || [])
+          .filter((it) => rm ? matchesMaterial(rm, it.materialId, it.materialCode, it.materialName) : it.materialCode === matCodeStr)
+          .reduce((s, it) => s + (Number(it.issuedQty) || 0), 0);
+        const thisIssueTotalForMat = issueData.items
+          .filter((it) => rm ? matchesMaterial(rm, it.materialId, it.materialCode, it.materialName) : it.materialCode === matCodeStr)
+          .reduce((s, it) => s + (Number(it.quantity) || 0), 0);
+        const totalIssuedForMat = otherIssuesQty + thisIssueTotalForMat;
+        const avail = Math.max(0, Number(rm?.stockKushtia || 0));
+
+        const uniqueBatchNum = ensureUniqueUpdateBatchNumber(
+          newItem.batchNumber && !newItem.batchNumber.startsWith('KUS-B') ? newItem.batchNumber : `RM-BATCH-INIT-${matCodeStr}`,
+          matCodeStr
         );
-        const avail = Math.max(0, rm?.stockKushtia || 0);
-        updatedBatches.push({
-          id: newItem.batchId || `batch-${Date.now()}-${newItem.materialCode || 'RM'}`,
-          batchNumber: newItem.batchNumber || `KUS-B2610-${issueData.productionOrderNumber?.replace(/\D/g, '').slice(-2) || '01'}`,
-          batchBarcode: newItem.batchBarcode || `BC-${newItem.materialCode || newItem.materialId}`,
-          materialId: String(rm?.id || newItem.materialId),
-          materialCode: rm?.code || newItem.materialCode || 'RM',
-          materialName: rm?.name || newItem.materialName || 'Raw Material',
+        const uniqueBarcode = ensureUniqueUpdateBatchBarcode(newItem.batchBarcode, uniqueBatchNum, matCodeStr);
+
+        matchedBatch = {
+          id: `batch-init-${Date.now()}-${idx}-${matCodeStr}`,
+          batchNumber: uniqueBatchNum,
+          batchBarcode: uniqueBarcode,
+          materialId: matIdStr,
+          materialCode: matCodeStr,
+          materialName: matNameStr,
           unit: rm?.unit || newItem.unit || 'Pieces',
           supplierId: 'SUP-KUSHTIA',
-          supplierName: 'Kushtia Factory Store',
-          purchaseDate: updateDate,
-          unitPurchaseRate: Number(newItem.unitCostBDT) || rm?.lastPurchaseUnitCostBDT || 0,
-          receivedQty: avail + Number(newItem.quantity),
-          issuedQty: Number(newItem.quantity),
+          supplierName: rm?.preferredSupplier || 'Kushtia Factory Store',
+          purchaseDate: rm?.createdAt ? String(rm.createdAt).substring(0, 10) : updateDate,
+          unitPurchaseRate: Number(newItem.unitCostBDT) || rm?.lastPurchaseUnitCostBDT || rm?.standardCostBDT || 0,
+          receivedQty: avail + totalIssuedForMat,
+          issuedQty: totalIssuedForMat,
           availableQty: avail,
           warehouseId: issueData.warehouseId || 'WH-KUSHTIA',
           warehouseName: issueData.warehouseName || 'Kushtia Assembly Plant',
-          status: 'Active',
-        });
+          status: avail === 0 ? 'Depleted' : 'Active',
+          grnRef: 'BULK-UPLOAD-STOCK',
+          remarks: `Auto-initialized batch on production issue revision ${issueNumber}`,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        updatedBatches.push(matchedBatch);
+        createdBatchNumbers.add(matchedBatch.batchNumber);
       }
-    }
+
+      resolvedItemBatchMap.set(idx, matchedBatch);
+    });
 
     setInventoryBatches(updatedBatches);
     if (typeof window !== 'undefined') {
@@ -9025,18 +9389,9 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     let newTotalIssuedQty = 0;
     const newIssueLineItems: MaterialIssueItem[] = issueData.items.map((r, idx) => {
       const rm = updatedRawMaterials.find(
-        (m) =>
-          String(m.id) === String(r.materialId) ||
-          m.code === r.materialId ||
-          (r.materialCode && m.code === r.materialCode) ||
-          (r.materialName && m.name?.trim().toLowerCase() === r.materialName.trim().toLowerCase())
+        (m) => matchesMaterial(m, r.materialId, r.materialCode, r.materialName)
       );
-      const batch = updatedBatches.find(
-        (b) =>
-          (r.batchId && b.id === r.batchId) ||
-          (r.batchNumber && b.batchNumber === r.batchNumber) ||
-          String(b.materialId) === String(r.materialId)
-      );
+      const batch = resolvedItemBatchMap.get(idx);
 
       const unitRate = Number(r.unitCostBDT) || (batch ? batch.unitPurchaseRate : 0) || rm?.lastPurchaseUnitCostBDT || rm?.standardCostBDT || 0;
       const itemCost = Number(r.quantity) * unitRate;
@@ -9048,8 +9403,8 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         materialId: String(rm?.id || r.materialId),
         materialCode: rm?.code || r.materialCode || batch?.materialCode || '',
         materialName: rm?.name || r.materialName || batch?.materialName || 'Raw Material',
-        batchNumber: r.batchNumber || batch?.batchNumber || `KUS-B2610-${issueData.productionOrderNumber?.replace(/\D/g, '').slice(-2) || '01'}`,
-        batchBarcode: r.batchBarcode || batch?.batchBarcode || `BC-${r.materialCode || r.materialId}`,
+        batchNumber: batch?.batchNumber || r.batchNumber || `RM-BATCH-INIT-${rm?.code || r.materialId}`,
+        batchBarcode: batch?.batchBarcode || r.batchBarcode || `BC-${rm?.code || r.materialId}`,
         unit: rm?.unit || r.unit || batch?.unit || 'Pieces',
         requestedQty: Number(r.quantity),
         issuedQty: Number(r.quantity),
@@ -9121,6 +9476,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const adjMovement: InventoryMovement = {
       id: `mov-${Date.now()}`,
       date: updateDate,
+      timestamp: new Date().toISOString(),
       materialId: 'RM-UPDATE',
       materialCode: 'RM-UPDATE',
       materialName: 'Raw Materials Issue Revision',
@@ -9176,6 +9532,18 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const sb = getSupabase();
     if (sb) {
       try {
+        const resolveNumericMatId = (matId?: string, matCode?: string, matName?: string): number | null => {
+          const rm = updatedRawMaterials.find(
+            (m) =>
+              (matId && String(m.id) === String(matId)) ||
+              (matCode && m.code === matCode) ||
+              (matName && m.name?.trim().toLowerCase() === matName.trim().toLowerCase())
+          );
+          if (rm && /^\d+$/.test(String(rm.id))) return Number(rm.id);
+          if (matId && /^\d+$/.test(String(matId))) return Number(matId);
+          return null;
+        };
+
         // A. Update material_issues master record
         await sb
           .from('material_issues')
@@ -9209,35 +9577,21 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             await sb.from('material_issue_items').delete().eq('issue_id', dbIssueId);
 
             if (newIssueLineItems.length > 0) {
-              const lineItemsPayload = newIssueLineItems.map((item) => {
-                let matId: number | null = null;
-                const rm = updatedRawMaterials.find(
-                  (m) =>
-                    String(m.id) === String(item.materialId) ||
-                    m.code === item.materialId ||
-                    m.code === item.materialCode
-                );
-                if (rm && /^\d+$/.test(String(rm.id))) {
-                  matId = Number(rm.id);
-                } else if (/^\d+$/.test(String(item.materialId))) {
-                  matId = Number(item.materialId);
-                }
-                return {
-                  issue_id: dbIssueId,
-                  material_id: matId,
-                  material_code: item.materialCode,
-                  material_name: item.materialName,
-                  batch_number: item.batchNumber,
-                  batch_barcode: item.batchBarcode || `BC-${item.batchNumber}`,
-                  unit: item.unit || 'Pieces',
-                  requested_qty: Number(item.requestedQty) || 0,
-                  issued_qty: Number(item.issuedQty) || 0,
-                  unit_cost_bdt: Number(item.unitCostBDT) || 0,
-                  total_material_cost_bdt: Number(item.totalMaterialCostBDT) || 0,
-                  is_fifo_override: Boolean(item.isFifoOverride),
-                  override_reason: item.overrideReason || null,
-                };
-              });
+              const lineItemsPayload = newIssueLineItems.map((item) => ({
+                issue_id: dbIssueId,
+                material_id: resolveNumericMatId(item.materialId, item.materialCode, item.materialName),
+                material_code: item.materialCode,
+                material_name: item.materialName,
+                batch_number: item.batchNumber,
+                batch_barcode: item.batchBarcode || `BC-${item.batchNumber}`,
+                unit: item.unit || 'Pieces',
+                requested_qty: Number(item.requestedQty) || 0,
+                issued_qty: Number(item.issuedQty) || 0,
+                unit_cost_bdt: Number(item.unitCostBDT) || 0,
+                total_material_cost_bdt: Number(item.totalMaterialCostBDT) || 0,
+                is_fifo_override: Boolean(item.isFifoOverride),
+                override_reason: item.overrideReason || null,
+              }));
 
               const { error: liErr } = await sb.from('material_issue_items').insert(lineItemsPayload);
               if (liErr && liErr.code === '23503') {
@@ -9260,8 +9614,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             };
             if (targetId !== null) {
               await sb.from('raw_materials').update(updatePayload).eq('id', targetId);
-            }
-            if (adj.material.code) {
+            } else if (adj.material.code) {
               await sb.from('raw_materials').update(updatePayload).eq('code', adj.material.code);
             }
           } catch (rmErr) {
@@ -9269,16 +9622,72 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           }
         }
 
-        // E. Update inventory_batches in Supabase database
-        for (const batch of updatedBatches) {
+        // E. Insert newly materialized batches and update modified batches in inventory_batches
+        const createdBatchList = updatedBatches.filter((b) => createdBatchNumbers.has(b.batchNumber));
+        if (createdBatchList.length > 0) {
+          const insertBatchesPayload = createdBatchList.map((b) => ({
+            batch_number: b.batchNumber,
+            batch_barcode: b.batchBarcode,
+            material_id: resolveNumericMatId(b.materialId, b.materialCode, b.materialName),
+            material_code: b.materialCode,
+            material_name: b.materialName,
+            unit: b.unit || 'Pieces',
+            supplier_id: null,
+            supplier_name: b.supplierName || 'Kushtia Factory Store',
+            purchase_date: b.purchaseDate || updateDate,
+            unit_purchase_rate: Number(b.unitPurchaseRate) || 0,
+            received_qty: Number(b.receivedQty) || 0,
+            issued_qty: Number(b.issuedQty) || 0,
+            available_qty: Math.max(0, Number(b.availableQty) || 0),
+            warehouse_id: null,
+            warehouse_name: b.warehouseName || 'Kushtia Assembly Plant',
+            status: b.status || 'Active',
+            grn_ref: b.grnRef || 'BULK-UPLOAD-STOCK',
+            remarks: b.remarks || null,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          }));
+          try {
+            const { error: cbErr } = await sb.from('inventory_batches').insert(insertBatchesPayload);
+            if (cbErr && cbErr.code === '23503') {
+              const safeCb = insertBatchesPayload.map((bp) => ({ ...bp, material_id: null }));
+              await sb.from('inventory_batches').insert(safeCb);
+            } else if (cbErr && cbErr.code === '23505') {
+              for (const bp of insertBatchesPayload) {
+                await sb
+                  .from('inventory_batches')
+                  .update({
+                    issued_qty: bp.issued_qty,
+                    available_qty: bp.available_qty,
+                    status: bp.status,
+                    updated_at: new Date().toISOString(),
+                  })
+                  .eq('batch_number', bp.batch_number);
+              }
+            }
+          } catch (cbEx) {
+            console.warn('Supabase created inventory_batches update notice:', cbEx);
+          }
+        }
+
+        const modifiedBatchList = updatedBatches.filter((b) => modifiedBatchNumbers.has(b.batchNumber));
+        for (const batch of modifiedBatchList) {
           try {
             const batchPayload = {
-              available_qty: Number(batch.availableQty) || 0,
+              available_qty: Math.max(0, Number(batch.availableQty) || 0),
               issued_qty: Number(batch.issuedQty) || 0,
-              status: batch.status,
+              status: batch.status || (Number(batch.availableQty) <= 0 ? 'Depleted' : 'Active'),
               updated_at: new Date().toISOString(),
             };
-            await sb.from('inventory_batches').update(batchPayload).eq('batch_number', batch.batchNumber);
+            if (/^\d+$/.test(String(batch.id))) {
+              await sb.from('inventory_batches').update(batchPayload).eq('id', Number(batch.id));
+            } else {
+              await sb
+                .from('inventory_batches')
+                .update(batchPayload)
+                .eq('batch_number', batch.batchNumber)
+                .eq('material_code', batch.materialCode);
+            }
           } catch (bErr) {
             console.warn('Supabase inventory_batches update notice:', bErr);
           }
@@ -9288,27 +9697,20 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         try {
           await sb.from('production_consumption').delete().eq('production_order_number', issueData.productionOrderNumber);
           if (newConsumptions.length > 0) {
-            const consPayload = newConsumptions.map((c) => {
-              let matId: number | null = null;
-              const rm = updatedRawMaterials.find(
-                (m) => String(m.id) === String(c.materialId) || m.code === c.materialCode
-              );
-              if (rm && /^\d+$/.test(String(rm.id))) matId = Number(rm.id);
-              return {
-                production_order_id: String(c.productionOrderId),
-                production_order_number: c.productionOrderNumber,
-                material_id: matId,
-                material_code: c.materialCode,
-                material_name: c.materialName,
-                batch_number: c.batchNumber,
-                batch_barcode: c.batchBarcode,
-                quantity: Number(c.quantity) || 0,
-                unit_cost_bdt: Number(c.unitCostBDT) || 0,
-                total_cost_bdt: Number(c.totalCostBDT) || 0,
-                date: c.date,
-                issued_by: c.issuedBy,
-              };
-            });
+            const consPayload = newConsumptions.map((c) => ({
+              production_order_id: String(c.productionOrderId),
+              production_order_number: c.productionOrderNumber,
+              material_id: resolveNumericMatId(c.materialId, c.materialCode, c.materialName),
+              material_code: c.materialCode,
+              material_name: c.materialName,
+              batch_number: c.batchNumber,
+              batch_barcode: c.batchBarcode,
+              quantity: Number(c.quantity) || 0,
+              unit_cost_bdt: Number(c.unitCostBDT) || 0,
+              total_cost_bdt: Number(c.totalCostBDT) || 0,
+              date: c.date,
+              issued_by: c.issuedBy,
+            }));
             const { error: consErr } = await sb.from('production_consumption').insert(consPayload);
             if (consErr && consErr.code === '23503') {
               const safeCons = consPayload.map((cp) => ({ ...cp, material_id: null }));
@@ -9358,9 +9760,12 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         } catch (movErr) {}
 
         // I. Synchronize all caches
-        await refreshMaterialIssues?.();
-        await refreshRawMaterials?.();
-        await refreshInventoryBatches?.();
+        await Promise.allSettled([
+          refreshMaterialIssues?.(),
+          refreshRawMaterials?.(),
+          refreshInventoryBatches?.(),
+          refreshInventoryMovements?.(),
+        ]);
       } catch (sbErr) {
         console.warn('Supabase material issue update notice:', sbErr);
       }
@@ -19652,6 +20057,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         rawMaterialReceipts,
         refreshRawMaterialReceipts,
         refreshInventoryBatches,
+        refreshInventoryMovements,
         syncPendingReceiptsToSupabase,
         materialIssues,
         refreshMaterialIssues,

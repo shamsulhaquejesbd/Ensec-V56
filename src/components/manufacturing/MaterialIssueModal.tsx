@@ -127,69 +127,87 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
     return 0;
   };
 
-  // Helper to retrieve all eligible batches for a raw material, with the PO batch as the primary default
+  // Helper to retrieve all eligible batches for a raw material, defaulting to oldest active FIFO batch or material-unique opening batch
   const getBatchOptionsForMaterial = (materialId: string, requiredQty: number = 0) => {
     const rm = findRawMaterial(materialId);
-    const existingBatches = inventoryBatches.filter(b => {
-      if (!b) return false;
-      const bMatId = String(b.materialId || '').trim().toLowerCase();
-      const bMatCode = String(b.materialCode || '').trim().toLowerCase();
-      const targetId = String(materialId).trim().toLowerCase();
-      const targetClean = targetId.replace(/[^a-z0-9]/gi, '');
-      const rmCode = rm?.code?.trim().toLowerCase() || '';
-      const rmCodeClean = rmCode.replace(/[^a-z0-9]/gi, '');
-      const rmId = String(rm?.id || '').trim().toLowerCase();
-      return (
-        bMatId === targetId ||
-        bMatCode === targetId ||
-        (bMatCode && bMatCode.replace(/[^a-z0-9]/gi, '') === targetClean) ||
-        (rmCode && bMatCode === rmCode) ||
-        (rmCodeClean && bMatCode.replace(/[^a-z0-9]/gi, '') === rmCodeClean) ||
-        (rmId && bMatId === rmId)
-      ) && (Number(b.availableQty) > 0 || b.status === 'Active');
-    });
+    const matchingBatches = inventoryBatches
+      .filter((b) => {
+        if (!b) return false;
+        const bMatId = String(b.materialId || '').trim().toLowerCase();
+        const bMatCode = String(b.materialCode || '').trim().toLowerCase();
+        const targetId = String(materialId).trim().toLowerCase();
+        const targetClean = targetId.replace(/[^a-z0-9]/gi, '');
+        const rmCode = rm?.code?.trim().toLowerCase() || '';
+        const rmCodeClean = rmCode.replace(/[^a-z0-9]/gi, '');
+        const rmId = String(rm?.id || '').trim().toLowerCase();
+        return (
+          bMatId === targetId ||
+          bMatCode === targetId ||
+          (bMatCode && bMatCode.replace(/[^a-z0-9]/gi, '') === targetClean) ||
+          (rmCode && bMatCode === rmCode) ||
+          (rmCodeClean && bMatCode.replace(/[^a-z0-9]/gi, '') === rmCodeClean) ||
+          (rmId && bMatId === rmId)
+        );
+      })
+      .sort((a, b) => {
+        const dA = new Date(a.purchaseDate || '2026-01-01').getTime();
+        const dB = new Date(b.purchaseDate || '2026-01-01').getTime();
+        if (dA !== dB) return dA - dB;
+        return String(a.id).localeCompare(String(b.id), undefined, { numeric: true });
+      });
 
-    const poBatchId = `batch-${order.orderNumber || 'PO'}-${materialId}`;
+    const activeBatches = matchingBatches.filter((b) => Number(b.availableQty) > 0 && b.status !== 'Quarantined');
+    const depletedBatches = matchingBatches.filter((b) => !(Number(b.availableQty) > 0 && b.status !== 'Quarantined'));
+
     const realFactoryStock = getMaterialStock(rm);
-    const totalBatchesStock = existingBatches.reduce((acc, b) => acc + (Number(b.availableQty) || 0), 0);
+    const totalActiveBatchesStock = activeBatches.reduce((acc, b) => acc + (Number(b.availableQty) || 0), 0);
+    const unbatchedAvailable = Math.max(0, realFactoryStock - totalActiveBatchesStock);
 
     // Accurate available stock: reflects true warehouse inventory or active batch stock
-    const actualAvailable = realFactoryStock > 0 ? realFactoryStock : totalBatchesStock;
-    const poUnitRate = rm?.lastPurchaseUnitCostBDT || rm?.standardCostBDT || 0;
+    const actualAvailable = realFactoryStock > 0 ? realFactoryStock : totalActiveBatchesStock;
+    const matCodeClean = (rm?.code || String(materialId)).trim();
+    const initBatchId = `batch-init-${matCodeClean}`;
+    const initBatchNumber = realFactoryStock > 0 ? `RM-BATCH-INIT-${matCodeClean}` : `${poBatchNumber}-${matCodeClean}`;
+    const unitRate = rm?.lastPurchaseUnitCostBDT || rm?.standardCostBDT || 0;
 
-    const poBatch: InventoryBatch = {
-      id: poBatchId,
-      batchNumber: poBatchNumber,
-      batchBarcode: `BC-${order.orderNumber?.replace(/\D/g, '') || '2026'}-${materialId}`,
+    const initBatch: InventoryBatch = {
+      id: initBatchId,
+      batchNumber: initBatchNumber,
+      batchBarcode: rm?.barcode || `BC-INIT-${matCodeClean}`,
       materialId: String(rm?.id || materialId),
-      materialCode: rm?.code || 'RM',
+      materialCode: rm?.code || matCodeClean,
       materialName: rm?.name || 'Raw Material',
       unit: rm?.unit || 'PCS',
       supplierId: 'SUP-KUSHTIA',
-      supplierName: 'Kushtia Factory Store',
+      supplierName: rm?.preferredSupplier || 'Kushtia Factory Store',
       purchaseDate: order.date || order.manufacturingDate || new Date().toISOString().substring(0, 10),
-      unitPurchaseRate: poUnitRate,
-      receivedQty: actualAvailable,
+      unitPurchaseRate: unitRate,
+      receivedQty: unbatchedAvailable > 0 ? unbatchedAvailable : actualAvailable,
       issuedQty: 0,
-      availableQty: actualAvailable,
+      availableQty: unbatchedAvailable > 0 ? unbatchedAvailable : actualAvailable,
       warehouseId: 'WH-KUSHTIA',
       warehouseName: 'Kushtia Assembly Plant',
-      status: actualAvailable > 0 ? 'Active' : 'Depleted',
+      status: (unbatchedAvailable > 0 || actualAvailable > 0) ? 'Active' : 'Depleted',
     };
 
-    // PO batch is the primary default option according to Production Orders number
-    const allBatches: InventoryBatch[] = [poBatch];
-    existingBatches.forEach(b => {
-      if (b.batchNumber !== poBatchNumber && b.id !== poBatchId) {
+    const allBatches: InventoryBatch[] = [...activeBatches];
+    const hasInitBatchAlready = matchingBatches.some((b) => b.batchNumber === initBatchNumber);
+    if ((unbatchedAvailable > 0 || activeBatches.length === 0) && !hasInitBatchAlready) {
+      allBatches.push(initBatch);
+    }
+    depletedBatches.forEach((b) => {
+      if (!allBatches.some((ab) => ab.id === b.id)) {
         allBatches.push(b);
       }
     });
 
+    const defaultBatch = activeBatches[0] || allBatches[0] || initBatch;
+
     return {
       allBatches,
-      defaultBatch: poBatch,
+      defaultBatch,
       actualAvailable,
-      rm
+      rm,
     };
   };
 
@@ -199,7 +217,7 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
       const editRows: IssueRow[] = currentIssue.items.map((item, idx) => {
         const prevQty = Number(item.issuedQty) || 0;
         const { allBatches, defaultBatch, actualAvailable, rm } = getBatchOptionsForMaterial(item.materialId, prevQty);
-        
+
         // Match batch by batchNumber, barcode, or id
         const matchedBatch = allBatches.find(
           b => b.id === item.batchNumber || b.batchNumber === item.batchNumber || b.batchBarcode === item.batchBarcode
@@ -306,7 +324,7 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
 
     setIssueRows(prev => prev.map(row => {
       if (row.id !== rowId) return row;
-      const baseAvail = selectedBatch ? Number(selectedBatch.availableQty) : actualAvailable;
+      const baseAvail = !isOverride ? actualAvailable : (selectedBatch ? Number(selectedBatch.availableQty) : actualAvailable);
       const effectiveAvail = baseAvail + (row.previouslyIssuedQty || 0);
       return {
         ...row,
@@ -764,7 +782,7 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
                             </div>
                           </td>
 
-                          {/* Batch Selector with PO Batch preselected by default */}
+                          {/* Batch Selector with FIFO batch preselected by default */}
                           <td className="p-3">
                             <div className="space-y-1">
                               <select
@@ -778,8 +796,8 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
                               >
                                 {allBatches.map(b => (
                                   <option key={b.id} value={b.id}>
-                                    {b.batchNumber} {b.batchNumber === poBatchNumber 
-                                      ? `(PO Default • Stock: ${b.availableQty.toLocaleString()} ${rm?.unit || ''})` 
+                                    {b.batchNumber} {b.id === defaultBatch.id
+                                      ? `(FIFO Default • Avail: ${b.availableQty.toLocaleString()} ${rm?.unit || ''} | Rate: ${formatCurrency(b.unitPurchaseRate)})`
                                       : `(Lot: ${b.batchNumber} • Avail: ${b.availableQty.toLocaleString()} | Rate: ${formatCurrency(b.unitPurchaseRate)})`}
                                   </option>
                                 ))}
@@ -788,7 +806,7 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
                               <div className="flex items-center gap-1.5 text-[10px]">
                                 {isDefaultBatch && (
                                   <span className="inline-flex items-center gap-1 text-blue-600 dark:text-blue-400 font-semibold">
-                                    <CheckCircle2 className="w-3 h-3 text-blue-500" /> Default Batch (PO: {order.orderNumber})
+                                    <CheckCircle2 className="w-3 h-3 text-blue-500" /> FIFO Auto-Selected ({defaultBatch.batchNumber})
                                   </span>
                                 )}
                                 {row.isOverride && (
