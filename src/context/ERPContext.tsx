@@ -191,6 +191,9 @@ import { sendSMSViaGateway, compileTemplate } from '../lib/smsService.ts';
 import {
   EmployeeSalaryStructure,
   AttendanceRecord,
+  OfficeLocation,
+  RejectedAttendanceAttempt,
+  GPSValidationStatus,
   LeaveRecord,
   AdvanceLoanRecord,
   LoanInstallmentSchedule,
@@ -207,6 +210,17 @@ import {
   BonusType,
   SalaryPaymentMethod,
 } from '../types/payroll.ts';
+import {
+  DEFAULT_OFFICE_LOCATIONS,
+  DEFAULT_ALLOWED_RADIUS_METERS,
+  DEFAULT_MAX_GPS_ACCURACY_METERS,
+  DEFAULT_SHIFT_START_TIME,
+  DEFAULT_SHIFT_END_TIME,
+  DEFAULT_GRACE_PERIOD_MINUTES,
+  evaluateGeofenceAttendance,
+  calculateShiftAttendanceStatus,
+  isValidCoordinatePair,
+} from '../lib/geofence.ts';
 import {
   INITIAL_CENTRAL_EMPLOYEES,
   INITIAL_SALARY_STRUCTURES,
@@ -662,9 +676,49 @@ interface ERPContextType {
   updateSalaryStructure: (id: string, updates: Partial<EmployeeSalaryStructure>, reason?: string) => void;
   getEmployeeSalaryStructure: (fieldForceId: string) => EmployeeSalaryStructure | undefined;
 
+  officeLocations: OfficeLocation[];
+  addOfficeLocation: (loc: Omit<OfficeLocation, 'id'>) => Promise<{ success: boolean; id: string; error?: string }>;
+  updateOfficeLocation: (id: string, updates: Partial<OfficeLocation>) => Promise<{ success: boolean; error?: string }>;
+  deleteOfficeLocation: (id: string) => Promise<void>;
+  refreshOfficeLocations?: () => Promise<void>;
+
   attendanceRecords: AttendanceRecord[];
+  rejectedAttendanceAttempts: RejectedAttendanceAttempt[];
+  recordRejectedAttendanceAttempt: (attempt: Omit<RejectedAttendanceAttempt, 'id' | 'createdAt'>) => void;
   markAttendance: (record: any) => string;
   bulkMarkAttendance: (records: any, extra?: any) => void;
+  submitGpsCheckIn: (params: {
+    employee: FieldForceRep;
+    latitude: number;
+    longitude: number;
+    accuracy?: number;
+    date?: string;
+    checkInTime?: string;
+  }) => Promise<{
+    accepted: boolean;
+    distanceMeters?: number;
+    allowedRadiusMeters?: number;
+    reason: string;
+    errorCode?: string;
+    record?: AttendanceRecord;
+    rejectedAttempt?: RejectedAttendanceAttempt;
+  }>;
+  submitGpsCheckOut: (params: {
+    employee: FieldForceRep;
+    latitude: number;
+    longitude: number;
+    accuracy?: number;
+    date?: string;
+    checkOutTime?: string;
+  }) => Promise<{
+    accepted: boolean;
+    distanceMeters?: number;
+    allowedRadiusMeters?: number;
+    reason: string;
+    errorCode?: string;
+    record?: AttendanceRecord;
+    rejectedAttempt?: RejectedAttendanceAttempt;
+  }>;
   getEmployeeAttendanceSummary: (fieldForceId: string, monthYear: string) => any;
 
   leaveRecords: LeaveRecord[];
@@ -1966,6 +2020,19 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return INITIAL_SALARY_STRUCTURES;
   });
 
+  const [officeLocations, setOfficeLocations] = useState<OfficeLocation[]>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const stored = localStorage.getItem('ensec_office_locations');
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        }
+      } catch (e) {}
+    }
+    return DEFAULT_OFFICE_LOCATIONS;
+  });
+
   const [attendanceRecords, setAttendanceRecords] = useState<AttendanceRecord[]>(() => {
     if (typeof window !== 'undefined') {
       try {
@@ -1973,6 +2040,19 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (stored) {
           const parsed = JSON.parse(stored);
           if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        }
+      } catch (e) {}
+    }
+    return [];
+  });
+
+  const [rejectedAttendanceAttempts, setRejectedAttendanceAttempts] = useState<RejectedAttendanceAttempt[]>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const stored = localStorage.getItem('ensec_rejected_attendance_attempts');
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (Array.isArray(parsed)) return parsed;
         }
       } catch (e) {}
     }
@@ -2210,9 +2290,31 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
+      localStorage.setItem('ensec_office_locations', JSON.stringify(officeLocations));
+    }
+    fetch('/api/office-locations/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ locations: officeLocations }),
+    }).catch(() => {});
+  }, [officeLocations]);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
       localStorage.setItem('ensec_attendance_records', JSON.stringify(attendanceRecords));
     }
+    fetch('/api/attendance/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ records: attendanceRecords }),
+    }).catch(() => {});
   }, [attendanceRecords]);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('ensec_rejected_attendance_attempts', JSON.stringify(rejectedAttendanceAttempts));
+    }
+  }, [rejectedAttendanceAttempts]);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -3790,6 +3892,29 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               productiveVisitsCount: 0,
               isActive: row.is_active !== false,
               status: row.is_active === false ? 'Inactive' : 'Active',
+              // GPS Geofencing & Shift Configuration
+              assignedOfficeId: row.assigned_office_id || 'office-hq',
+              assignedOfficeName: row.assigned_office_name || row.branch_workplace || 'Head Office (Gulshan HQ)',
+              officeLatitude:
+                row.office_latitude !== null && row.office_latitude !== undefined
+                  ? Number(row.office_latitude)
+                  : DEFAULT_OFFICE_LOCATIONS[0].latitude,
+              officeLongitude:
+                row.office_longitude !== null && row.office_longitude !== undefined
+                  ? Number(row.office_longitude)
+                  : DEFAULT_OFFICE_LOCATIONS[0].longitude,
+              allowedRadiusMeters:
+                Number(row.allowed_radius_meters) > 0
+                  ? Number(row.allowed_radius_meters)
+                  : DEFAULT_ALLOWED_RADIUS_METERS,
+              officeAddress: row.office_address || DEFAULT_OFFICE_LOCATIONS[0].address,
+              locationStatus: row.location_status === 'Inactive' ? 'Inactive' : 'Active',
+              shiftStartTime: row.shift_start_time || DEFAULT_SHIFT_START_TIME,
+              shiftEndTime: row.shift_end_time || DEFAULT_SHIFT_END_TIME,
+              gracePeriodMinutes:
+                row.grace_period_minutes !== null && row.grace_period_minutes !== undefined
+                  ? Number(row.grace_period_minutes)
+                  : DEFAULT_GRACE_PERIOD_MINUTES,
               isOvertimeEligible: row.is_overtime_eligible !== undefined ? Boolean(row.is_overtime_eligible) : (row.overtime_policy?.isEligible !== undefined ? Boolean(row.overtime_policy.isEligible) : true),
               overtimeCalculationBasis: row.overtime_calculation_basis || row.overtime_policy?.calculationBasis || 'Basic Salary',
               overtimeStandardMonthlyHours: Number(row.overtime_standard_hours) || Number(row.overtime_policy?.standardMonthlyWorkingHours) || 208,
@@ -3806,6 +3931,138 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       } catch (err) {
         setFieldForceReps([]);
+      }
+    }
+  };
+
+  const refreshOfficeLocations = async () => {
+    const sb = getSupabase();
+    if (sb) {
+      try {
+        const { data, error } = await sb
+          .from('office_locations')
+          .select('*')
+          .order('id', { ascending: true });
+        if (!error && Array.isArray(data) && data.length > 0) {
+          const mapped: OfficeLocation[] = data.map((row: any) => ({
+            id: String(row.id),
+            code: row.code || undefined,
+            name: row.name || 'Office Location',
+            address: row.address || '',
+            latitude: Number(row.latitude),
+            longitude: Number(row.longitude),
+            allowedRadiusMeters: Number(row.allowed_radius_meters) || DEFAULT_ALLOWED_RADIUS_METERS,
+            status: row.status === 'Inactive' ? 'Inactive' : 'Active',
+            createdAt: row.created_at,
+            updatedAt: row.updated_at,
+          }));
+          setOfficeLocations(mapped);
+          return;
+        }
+      } catch {
+        // Ignore if table not yet created in Supabase
+      }
+    }
+  };
+
+  const refreshAttendanceData = async () => {
+    const sb = getSupabase();
+    if (sb) {
+      try {
+        const { data, error } = await sb
+          .from('employee_attendances')
+          .select('*')
+          .order('date', { ascending: false });
+        if (!error && Array.isArray(data) && data.length > 0) {
+          const mapped: AttendanceRecord[] = data.map((row: any) => ({
+            id: String(row.id),
+            fieldForceId: row.employee_id ? String(row.employee_id) : undefined,
+            employeeId: row.employee_id ? String(row.employee_id) : undefined,
+            employeeCode: row.employee_code || undefined,
+            employeeName: row.employee_name || 'Employee',
+            department: row.department || undefined,
+            designation: row.designation || undefined,
+            date: String(row.date),
+            status: (row.status || 'Present') as AttendanceStatus,
+            inTime: row.in_time || undefined,
+            checkInTime: row.in_time || undefined,
+            outTime: row.out_time || undefined,
+            checkOutTime: row.out_time || undefined,
+            workHours: row.work_hours !== null && row.work_hours !== undefined ? Number(row.work_hours) : undefined,
+            overtimeHours: Number(row.overtime_hours) || 0,
+            lateDurationMinutes: Number(row.late_duration_minutes) || 0,
+            lateMinutes: Number(row.late_duration_minutes) || 0,
+            isLate: (Number(row.late_duration_minutes) || 0) > 0 || row.status === 'Late',
+            assignedOfficeId: row.assigned_office_id || undefined,
+            assignedOfficeName: row.assigned_office_name || undefined,
+            officeLatitude: row.office_latitude !== null && row.office_latitude !== undefined ? Number(row.office_latitude) : undefined,
+            officeLongitude: row.office_longitude !== null && row.office_longitude !== undefined ? Number(row.office_longitude) : undefined,
+            allowedRadiusMeters: row.allowed_radius_meters !== null && row.allowed_radius_meters !== undefined ? Number(row.allowed_radius_meters) : undefined,
+            checkInLatitude: row.check_in_latitude !== null && row.check_in_latitude !== undefined ? Number(row.check_in_latitude) : undefined,
+            checkInLongitude: row.check_in_longitude !== null && row.check_in_longitude !== undefined ? Number(row.check_in_longitude) : undefined,
+            checkInDistanceMeters: row.check_in_distance_meters !== null && row.check_in_distance_meters !== undefined ? Number(row.check_in_distance_meters) : undefined,
+            checkInGpsAccuracyMeters: row.check_in_gps_accuracy_meters !== null && row.check_in_gps_accuracy_meters !== undefined ? Number(row.check_in_gps_accuracy_meters) : undefined,
+            checkInLocationText: row.check_in_location_text || undefined,
+            checkOutLatitude: row.check_out_latitude !== null && row.check_out_latitude !== undefined ? Number(row.check_out_latitude) : undefined,
+            checkOutLongitude: row.check_out_longitude !== null && row.check_out_longitude !== undefined ? Number(row.check_out_longitude) : undefined,
+            checkOutDistanceMeters: row.check_out_distance_meters !== null && row.check_out_distance_meters !== undefined ? Number(row.check_out_distance_meters) : undefined,
+            checkOutGpsAccuracyMeters: row.check_out_gps_accuracy_meters !== null && row.check_out_gps_accuracy_meters !== undefined ? Number(row.check_out_gps_accuracy_meters) : undefined,
+            checkOutLocationText: row.check_out_location_text || undefined,
+            gpsValidationStatus: (row.gps_validation_status || 'Manual') as GPSValidationStatus,
+            validationReason: row.validation_reason || undefined,
+            remarks: row.remarks || undefined,
+            createdAt: row.created_at,
+            updatedAt: row.updated_at,
+          }));
+          setAttendanceRecords((prev) => {
+            const map = new Map<string, AttendanceRecord>();
+            prev.forEach((r) => map.set(`${r.employeeId}_${r.date}`, r));
+            mapped.forEach((r) => map.set(`${r.employeeId}_${r.date}`, r));
+            return Array.from(map.values()).sort((a, b) => b.date.localeCompare(a.date));
+          });
+        }
+      } catch {
+        // Ignore if table columns pending migration
+      }
+
+      try {
+        const { data: rejData, error: rejErr } = await sb
+          .from('attendance_rejected_attempts')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(200);
+        if (!rejErr && Array.isArray(rejData) && rejData.length > 0) {
+          const mappedRej: RejectedAttendanceAttempt[] = rejData.map((row: any) => ({
+            id: String(row.id),
+            employeeId: String(row.employee_id),
+            employeeCode: row.employee_code || undefined,
+            employeeName: row.employee_name || 'Employee',
+            department: row.department || undefined,
+            designation: row.designation || undefined,
+            assignedOfficeId: row.assigned_office_id || undefined,
+            assignedOfficeName: row.assigned_office_name || undefined,
+            officeLatitude: row.office_latitude !== null ? Number(row.office_latitude) : undefined,
+            officeLongitude: row.office_longitude !== null ? Number(row.office_longitude) : undefined,
+            allowedRadiusMeters: Number(row.allowed_radius_meters) || DEFAULT_ALLOWED_RADIUS_METERS,
+            attemptType: row.attempt_type === 'Check Out' ? 'Check Out' : 'Check In',
+            attendanceDate: String(row.attendance_date),
+            attemptTime: String(row.attempt_time),
+            latitude: row.latitude !== null ? Number(row.latitude) : undefined,
+            longitude: row.longitude !== null ? Number(row.longitude) : undefined,
+            distanceMeters: row.distance_meters !== null ? Number(row.distance_meters) : undefined,
+            gpsAccuracyMeters: row.gps_accuracy_meters !== null ? Number(row.gps_accuracy_meters) : undefined,
+            gpsValidationStatus: 'Rejected',
+            rejectionReason: row.rejection_reason || 'Outside permitted geofence',
+            deviceInfo: row.device_info || undefined,
+            createdAt: row.created_at || new Date().toISOString(),
+          }));
+          setRejectedAttendanceAttempts((prev) => {
+            const seen = new Set(mappedRej.map((m) => m.id));
+            return [...mappedRej, ...prev.filter((p) => !seen.has(p.id))].slice(0, 300);
+          });
+        }
+      } catch {
+        // Ignore if table not yet created
       }
     }
   };
@@ -5205,6 +5462,8 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       refreshBanks(),
       refreshUOMs(),
       refreshFieldForce(),
+      refreshOfficeLocations(),
+      refreshAttendanceData(),
       refreshOffers(),
       refreshSalesOrders(),
       refreshCRMAgreements(),
@@ -13776,12 +14035,36 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           overtime_policy_status: newRep.overtimePolicyStatus || 'Active',
           overtime_policy_notes: newRep.overtimePolicyNotes || null,
           overtime_policy_history: newRep.overtimePolicyHistory || [],
+          assigned_office_id: newRep.assignedOfficeId || 'office-hq',
+          assigned_office_name: newRep.assignedOfficeName || 'Head Office (Gulshan HQ)',
+          office_latitude: newRep.officeLatitude ?? DEFAULT_OFFICE_LOCATIONS[0].latitude,
+          office_longitude: newRep.officeLongitude ?? DEFAULT_OFFICE_LOCATIONS[0].longitude,
+          allowed_radius_meters: newRep.allowedRadiusMeters ?? DEFAULT_ALLOWED_RADIUS_METERS,
+          office_address: newRep.officeAddress || DEFAULT_OFFICE_LOCATIONS[0].address,
+          location_status: newRep.locationStatus || 'Active',
+          shift_start_time: newRep.shiftStartTime || DEFAULT_SHIFT_START_TIME,
+          shift_end_time: newRep.shiftEndTime || DEFAULT_SHIFT_END_TIME,
+          grace_period_minutes: newRep.gracePeriodMinutes ?? DEFAULT_GRACE_PERIOD_MINUTES,
         })
         .then(({ error }) => {
           if (error) {
             console.error('Supabase field_force_reps insert failed:', error);
-            // Non-fatal if specific custom columns are pending migration
-            if (error.code !== '42703') {
+            if (error.code === '42703') {
+              // Retry core columns only if SQL geofence migration is pending
+              sb.from('field_force_reps').insert({
+                code: newRep.code,
+                name: newRep.name,
+                phone: newRep.phone,
+                designation: newRep.designation,
+                field_force_type: newRep.fieldForceType,
+                department: newRep.department,
+                region: newRep.region,
+                area: newRep.area,
+                territory: newRep.territory,
+                email: newRep.email,
+                is_active: newRep.isActive !== false,
+              }).then(() => {});
+            } else {
               setFieldForceReps((prev) => prev.filter((r) => r.id !== id));
             }
           }
@@ -13859,10 +14142,40 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (updates.overtimePolicyStatus !== undefined) payload.overtime_policy_status = updates.overtimePolicyStatus;
       if (updates.overtimePolicyNotes !== undefined) payload.overtime_policy_notes = updates.overtimePolicyNotes;
       if (updates.overtimePolicyHistory !== undefined) payload.overtime_policy_history = updates.overtimePolicyHistory;
-      const q = !isNaN(Number(repId))
-        ? sb.from('field_force_reps').update(payload).eq('id', Number(repId))
-        : sb.from('field_force_reps').update(payload).eq('code', target?.code || repId);
-      q.then();
+      if (updates.assignedOfficeId !== undefined) payload.assigned_office_id = updates.assignedOfficeId;
+      if (updates.assignedOfficeName !== undefined) payload.assigned_office_name = updates.assignedOfficeName;
+      if (updates.officeLatitude !== undefined) payload.office_latitude = updates.officeLatitude;
+      if (updates.officeLongitude !== undefined) payload.office_longitude = updates.officeLongitude;
+      if (updates.allowedRadiusMeters !== undefined) payload.allowed_radius_meters = updates.allowedRadiusMeters;
+      if (updates.officeAddress !== undefined) payload.office_address = updates.officeAddress;
+      if (updates.locationStatus !== undefined) payload.location_status = updates.locationStatus;
+      if (updates.shiftStartTime !== undefined) payload.shift_start_time = updates.shiftStartTime;
+      if (updates.shiftEndTime !== undefined) payload.shift_end_time = updates.shiftEndTime;
+      if (updates.gracePeriodMinutes !== undefined) payload.grace_period_minutes = updates.gracePeriodMinutes;
+
+      const execUpdate = (p: any) =>
+        !isNaN(Number(repId))
+          ? sb.from('field_force_reps').update(p).eq('id', Number(repId))
+          : sb.from('field_force_reps').update(p).eq('code', target?.code || repId);
+
+      execUpdate(payload).then(({ error }) => {
+        if (error && error.code === '42703') {
+          const fallbackPayload = { ...payload };
+          delete fallbackPayload.assigned_office_id;
+          delete fallbackPayload.assigned_office_name;
+          delete fallbackPayload.office_latitude;
+          delete fallbackPayload.office_longitude;
+          delete fallbackPayload.allowed_radius_meters;
+          delete fallbackPayload.office_address;
+          delete fallbackPayload.location_status;
+          delete fallbackPayload.shift_start_time;
+          delete fallbackPayload.shift_end_time;
+          delete fallbackPayload.grace_period_minutes;
+          if (Object.keys(fallbackPayload).length > 0) {
+            execUpdate(fallbackPayload).then(() => {});
+          }
+        }
+      });
     }
   };
 
@@ -16825,16 +17138,219 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return salaryStructures.find((s) => s.employeeId === employeeId);
   };
 
+  const addOfficeLocation = async (
+    locData: Omit<OfficeLocation, 'id'>
+  ): Promise<{ success: boolean; id: string; error?: string }> => {
+    const id = `office-${Date.now().toString().slice(-6)}`;
+    const nowIso = new Date().toISOString();
+    const newLoc: OfficeLocation = {
+      ...locData,
+      id,
+      allowedRadiusMeters:
+        Number(locData.allowedRadiusMeters) > 0
+          ? Number(locData.allowedRadiusMeters)
+          : DEFAULT_ALLOWED_RADIUS_METERS,
+      status: locData.status === 'Inactive' ? 'Inactive' : 'Active',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+    setOfficeLocations((prev) => [newLoc, ...prev]);
+    addAuditLog(
+      'OFFICE_LOCATION_CREATED',
+      'Field Force Master',
+      `Created office geofence ${newLoc.name} (${newLoc.latitude}, ${newLoc.longitude}, ${newLoc.allowedRadiusMeters}m)`
+    );
+    try {
+      await fetch('/api/office-locations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newLoc),
+      });
+    } catch {}
+    const sb = getSupabase();
+    if (sb) {
+      sb.from('office_locations')
+        .upsert({
+          id: newLoc.id,
+          code: newLoc.code || null,
+          name: newLoc.name,
+          address: newLoc.address,
+          latitude: newLoc.latitude,
+          longitude: newLoc.longitude,
+          allowed_radius_meters: newLoc.allowedRadiusMeters,
+          status: newLoc.status,
+          updated_at: nowIso,
+        })
+        .then(() => {});
+    }
+    return { success: true, id };
+  };
+
+  const updateOfficeLocation = async (
+    id: string,
+    updates: Partial<OfficeLocation>
+  ): Promise<{ success: boolean; error?: string }> => {
+    const nowIso = new Date().toISOString();
+    let mergedOffice: OfficeLocation | undefined;
+    setOfficeLocations((prev) =>
+      prev.map((loc) => {
+        if (loc.id === id) {
+          mergedOffice = { ...loc, ...updates, updatedAt: nowIso };
+          return mergedOffice;
+        }
+        return loc;
+      })
+    );
+    // Cascade coordinate/radius updates to employees assigned to this office ID
+    setFieldForceReps((prev) =>
+      prev.map((rep) => {
+        if (rep.assignedOfficeId === id) {
+          return {
+            ...rep,
+            assignedOfficeName: updates.name ?? rep.assignedOfficeName,
+            officeLatitude: updates.latitude ?? rep.officeLatitude,
+            officeLongitude: updates.longitude ?? rep.officeLongitude,
+            allowedRadiusMeters: updates.allowedRadiusMeters ?? rep.allowedRadiusMeters,
+            officeAddress: updates.address ?? rep.officeAddress,
+            locationStatus: updates.status ?? rep.locationStatus,
+          };
+        }
+        return rep;
+      })
+    );
+    addAuditLog('OFFICE_LOCATION_UPDATED', 'Field Force Master', `Updated office geofence ID ${id}`);
+    try {
+      await fetch(`/api/office-locations/${encodeURIComponent(id)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates),
+      });
+    } catch {}
+    const sb = getSupabase();
+    if (sb && mergedOffice) {
+      sb.from('office_locations')
+        .upsert({
+          id: mergedOffice.id,
+          code: mergedOffice.code || null,
+          name: mergedOffice.name,
+          address: mergedOffice.address,
+          latitude: mergedOffice.latitude,
+          longitude: mergedOffice.longitude,
+          allowed_radius_meters: mergedOffice.allowedRadiusMeters,
+          status: mergedOffice.status,
+          updated_at: nowIso,
+        })
+        .then(() => {});
+    }
+    return { success: true };
+  };
+
+  const deleteOfficeLocation = async (id: string): Promise<void> => {
+    setOfficeLocations((prev) => prev.filter((loc) => loc.id !== id));
+    addAuditLog('OFFICE_LOCATION_DELETED', 'Field Force Master', `Deleted office geofence ID ${id}`);
+    try {
+      await fetch(`/api/office-locations/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    } catch {}
+    const sb = getSupabase();
+    if (sb) {
+      sb.from('office_locations').delete().eq('id', id).then(() => {});
+    }
+  };
+
+  const recordRejectedAttendanceAttempt = (
+    attempt: Omit<RejectedAttendanceAttempt, 'id' | 'createdAt'>
+  ) => {
+    const newAttempt: RejectedAttendanceAttempt = {
+      ...attempt,
+      id: `att-rej-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+      createdAt: new Date().toISOString(),
+    };
+    setRejectedAttendanceAttempts((prev) => [newAttempt, ...prev].slice(0, 300));
+    addAuditLog(
+      'ATTENDANCE_GPS_REJECTED',
+      'Attendance & Geofence',
+      `Rejected ${attempt.attemptType} for ${attempt.employeeName} (${attempt.rejectionReason})`
+    );
+  };
+
+  const resolveEmployeeGeofenceConfig = (employee: FieldForceRep) => {
+    const matchedOffice = employee.assignedOfficeId
+      ? officeLocations.find((o) => o.id === employee.assignedOfficeId)
+      : undefined;
+    const officeLat =
+      typeof employee.officeLatitude === 'number' && isValidCoordinatePair(employee.officeLatitude, employee.officeLongitude)
+        ? employee.officeLatitude
+        : matchedOffice?.latitude ?? DEFAULT_OFFICE_LOCATIONS[0].latitude;
+    const officeLng =
+      typeof employee.officeLongitude === 'number' && isValidCoordinatePair(employee.officeLatitude, employee.officeLongitude)
+        ? employee.officeLongitude
+        : matchedOffice?.longitude ?? DEFAULT_OFFICE_LOCATIONS[0].longitude;
+    const allowedRadiusMeters =
+      Number(employee.allowedRadiusMeters) > 0
+        ? Number(employee.allowedRadiusMeters)
+        : matchedOffice?.allowedRadiusMeters || DEFAULT_ALLOWED_RADIUS_METERS;
+    const locationStatus: 'Active' | 'Inactive' =
+      employee.locationStatus || matchedOffice?.status || 'Active';
+    return {
+      assignedOfficeId: employee.assignedOfficeId || matchedOffice?.id || DEFAULT_OFFICE_LOCATIONS[0].id,
+      assignedOfficeName:
+        employee.assignedOfficeName ||
+        matchedOffice?.name ||
+        employee.branchWorkplace ||
+        DEFAULT_OFFICE_LOCATIONS[0].name,
+      officeAddress: employee.officeAddress || matchedOffice?.address || DEFAULT_OFFICE_LOCATIONS[0].address,
+      officeLatitude: officeLat,
+      officeLongitude: officeLng,
+      allowedRadiusMeters,
+      locationStatus,
+      shiftStartTime: employee.shiftStartTime || payrollSettings.shiftStartTime || DEFAULT_SHIFT_START_TIME,
+      gracePeriodMinutes:
+        employee.gracePeriodMinutes ?? payrollSettings.lateGracePeriodMinutes ?? DEFAULT_GRACE_PERIOD_MINUTES,
+      standardDailyHours: payrollSettings.standardDailyHours || payrollSettings.standardWorkHoursPerDay || 8,
+      maxGpsAccuracyMeters: payrollSettings.maxGpsAccuracyMeters || DEFAULT_MAX_GPS_ACCURACY_METERS,
+    };
+  };
+
   const markAttendance = (record: Omit<AttendanceRecord, 'id' | 'createdAt' | 'updatedAt'>): string => {
     const id = `att-${Date.now().toString().slice(-6)}`;
     const now = new Date().toISOString();
     const newRecord: AttendanceRecord = {
       ...record,
       id,
+      gpsValidationStatus: record.gpsValidationStatus || 'Manual',
       createdAt: now,
       updatedAt: now,
     };
-    setAttendanceRecords((prev) => [newRecord, ...prev.filter((a) => !(a.employeeId === record.employeeId && a.date === record.date))]);
+    setAttendanceRecords((prev) => [
+      newRecord,
+      ...prev.filter((a) => !(a.employeeId === record.employeeId && a.date === record.date)),
+    ]);
+    const sb = getSupabase();
+    if (sb && record.employeeId) {
+      sb.from('employee_attendances')
+        .upsert(
+          {
+            id: newRecord.id,
+            employee_id: newRecord.employeeId,
+            employee_code: newRecord.employeeCode || '',
+            employee_name: newRecord.employeeName,
+            department: newRecord.department || null,
+            designation: newRecord.designation || null,
+            date: newRecord.date,
+            status: newRecord.status,
+            in_time: newRecord.inTime || newRecord.checkInTime || null,
+            out_time: newRecord.outTime || newRecord.checkOutTime || null,
+            overtime_hours: newRecord.overtimeHours || 0,
+            work_hours: newRecord.workHours || 0,
+            late_duration_minutes: newRecord.lateDurationMinutes ?? newRecord.lateMinutes ?? 0,
+            gps_validation_status: newRecord.gpsValidationStatus || 'Manual',
+            remarks: newRecord.remarks || null,
+            updated_at: now,
+          },
+          { onConflict: 'employee_id,date' }
+        )
+        .then(() => {});
+    }
     return id;
   };
 
@@ -16843,6 +17359,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const newItems: AttendanceRecord[] = records.map((r, idx) => ({
       ...r,
       id: `att-${Date.now()}-${idx}`,
+      gpsValidationStatus: r.gpsValidationStatus || 'Manual',
       createdAt: now,
       updatedAt: now,
     }));
@@ -16853,9 +17370,361 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     addAuditLog('ATTENDANCE_BULK_LOGGED', 'HR & Payroll', `Marked attendance for ${records.length} employees`);
   };
 
+  const submitGpsCheckIn: ERPContextType['submitGpsCheckIn'] = async ({
+    employee,
+    latitude,
+    longitude,
+    accuracy,
+    date,
+    checkInTime,
+  }) => {
+    const todayStr = date || new Date().toISOString().slice(0, 10);
+    const nowObj = new Date();
+    const timeHHmm =
+      checkInTime ||
+      `${String(nowObj.getHours()).padStart(2, '0')}:${String(nowObj.getMinutes()).padStart(2, '0')}`;
+    const existing = attendanceRecords.find(
+      (a) =>
+        (a.employeeId === employee.id || a.fieldForceId === employee.id) &&
+        a.date === todayStr &&
+        (a.checkInTime || a.inTime) &&
+        a.gpsValidationStatus === 'Accepted'
+    );
+    if (existing) {
+      return {
+        accepted: false,
+        errorCode: 'DUPLICATE_CHECK_IN',
+        reason: `Duplicate Check-In blocked: ${employee.name} has already checked in on ${todayStr} at ${existing.checkInTime || existing.inTime}.`,
+      };
+    }
+
+    const cfg = resolveEmployeeGeofenceConfig(employee);
+    try {
+      const resp = await fetch('/api/attendance/check-in', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          employeeId: employee.id,
+          employeeCode: employee.code,
+          employeeName: employee.name,
+          department: employee.department || 'Operations',
+          designation: employee.designation,
+          employeeCategory: employee.employeeCategory,
+          date: todayStr,
+          checkInTime: timeHHmm,
+          latitude,
+          longitude,
+          accuracy,
+          assignedOfficeId: cfg.assignedOfficeId,
+          assignedOfficeName: cfg.assignedOfficeName,
+          officeAddress: cfg.officeAddress,
+          officeLatitude: cfg.officeLatitude,
+          officeLongitude: cfg.officeLongitude,
+          allowedRadiusMeters: cfg.allowedRadiusMeters,
+          locationStatus: cfg.locationStatus,
+          shiftStartTime: cfg.shiftStartTime,
+          gracePeriodMinutes: cfg.gracePeriodMinutes,
+          standardDailyHours: cfg.standardDailyHours,
+          maxGpsAccuracyMeters: cfg.maxGpsAccuracyMeters,
+          hasExistingCheckIn: Boolean(existing),
+        }),
+      });
+      const data = await resp.json();
+      if (data.accepted && data.record) {
+        const rec: AttendanceRecord = data.record;
+        setAttendanceRecords((prev) => [
+          rec,
+          ...prev.filter((a) => !(a.employeeId === employee.id && a.date === todayStr)),
+        ]);
+        updateRepLocation(employee.id, latitude, longitude, `${cfg.assignedOfficeName} (GPS Check-In)`);
+        addAuditLog(
+          'GPS_CHECK_IN_ACCEPTED',
+          'Attendance & Geofence',
+          `${employee.name} checked in at ${timeHHmm} (${data.distanceMeters}m from ${cfg.assignedOfficeName})`
+        );
+        return data;
+      }
+      if (data.rejectedAttempt) {
+        setRejectedAttendanceAttempts((prev) => [data.rejectedAttempt, ...prev].slice(0, 300));
+        addAuditLog(
+          'GPS_CHECK_IN_REJECTED',
+          'Attendance & Geofence',
+          `Check-In rejected for ${employee.name}: ${data.reason}`
+        );
+      }
+      return data;
+    } catch {
+      // Offline fallback validation using identical shared geofence evaluator
+      const validation = evaluateGeofenceAttendance({
+        employeeLatitude: latitude,
+        employeeLongitude: longitude,
+        gpsAccuracyMeters: accuracy,
+        officeLatitude: cfg.officeLatitude,
+        officeLongitude: cfg.officeLongitude,
+        allowedRadiusMeters: cfg.allowedRadiusMeters,
+        locationStatus: cfg.locationStatus,
+        maxGpsAccuracyMeters: cfg.maxGpsAccuracyMeters,
+      });
+      if (!validation.accepted) {
+        const rej: RejectedAttendanceAttempt = {
+          id: `att-rej-${Date.now()}`,
+          employeeId: employee.id,
+          employeeCode: employee.code,
+          employeeName: employee.name,
+          department: employee.department,
+          designation: employee.designation,
+          assignedOfficeId: cfg.assignedOfficeId,
+          assignedOfficeName: cfg.assignedOfficeName,
+          officeLatitude: cfg.officeLatitude,
+          officeLongitude: cfg.officeLongitude,
+          allowedRadiusMeters: validation.allowedRadiusMeters,
+          attemptType: 'Check In',
+          attendanceDate: todayStr,
+          attemptTime: nowObj.toTimeString().slice(0, 8),
+          latitude,
+          longitude,
+          distanceMeters: validation.distanceMeters,
+          gpsAccuracyMeters: accuracy,
+          gpsValidationStatus: 'Rejected',
+          rejectionReason: validation.reason,
+          createdAt: nowObj.toISOString(),
+        };
+        setRejectedAttendanceAttempts((prev) => [rej, ...prev].slice(0, 300));
+        return {
+          accepted: false,
+          errorCode: validation.errorCode,
+          distanceMeters: validation.distanceMeters,
+          allowedRadiusMeters: validation.allowedRadiusMeters,
+          reason: validation.reason,
+          rejectedAttempt: rej,
+        };
+      }
+      const shiftCalc = calculateShiftAttendanceStatus({
+        checkInTime: timeHHmm,
+        shiftStartTime: cfg.shiftStartTime,
+        gracePeriodMinutes: cfg.gracePeriodMinutes,
+        standardDailyHours: cfg.standardDailyHours,
+      });
+      const rec: AttendanceRecord = {
+        id: `att-${Date.now().toString().slice(-6)}`,
+        fieldForceId: employee.id,
+        employeeId: employee.id,
+        employeeCode: employee.code,
+        employeeName: employee.name,
+        employeeCategory: employee.employeeCategory as EmployeeCategory | undefined,
+        department: employee.department || 'Operations',
+        designation: employee.designation,
+        date: todayStr,
+        status: shiftCalc.status,
+        inTime: timeHHmm,
+        checkInTime: timeHHmm,
+        isLate: shiftCalc.isLate,
+        lateMinutes: shiftCalc.lateDurationMinutes,
+        lateDurationMinutes: shiftCalc.lateDurationMinutes,
+        workHours: 0,
+        overtimeHours: 0,
+        assignedOfficeId: cfg.assignedOfficeId,
+        assignedOfficeName: cfg.assignedOfficeName,
+        officeLatitude: cfg.officeLatitude,
+        officeLongitude: cfg.officeLongitude,
+        allowedRadiusMeters: validation.allowedRadiusMeters,
+        checkInLatitude: latitude,
+        checkInLongitude: longitude,
+        checkInDistanceMeters: validation.distanceMeters,
+        checkInGpsAccuracyMeters: accuracy,
+        checkInLocationText: `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`,
+        gpsValidationStatus: 'Accepted',
+        validationReason: validation.reason,
+        remarks: `GPS Check-In Accepted (${validation.distanceMeters}m from ${cfg.assignedOfficeName})`,
+        createdAt: nowObj.toISOString(),
+        updatedAt: nowObj.toISOString(),
+      };
+      setAttendanceRecords((prev) => [
+        rec,
+        ...prev.filter((a) => !(a.employeeId === employee.id && a.date === todayStr)),
+      ]);
+      return {
+        accepted: true,
+        distanceMeters: validation.distanceMeters,
+        allowedRadiusMeters: validation.allowedRadiusMeters,
+        reason: validation.reason,
+        record: rec,
+      };
+    }
+  };
+
+  const submitGpsCheckOut: ERPContextType['submitGpsCheckOut'] = async ({
+    employee,
+    latitude,
+    longitude,
+    accuracy,
+    date,
+    checkOutTime,
+  }) => {
+    const todayStr = date || new Date().toISOString().slice(0, 10);
+    const nowObj = new Date();
+    const timeHHmm =
+      checkOutTime ||
+      `${String(nowObj.getHours()).padStart(2, '0')}:${String(nowObj.getMinutes()).padStart(2, '0')}`;
+    const existing = attendanceRecords.find(
+      (a) => (a.employeeId === employee.id || a.fieldForceId === employee.id) && a.date === todayStr
+    );
+    if (!existing || !(existing.checkInTime || existing.inTime) || existing.status === 'Absent') {
+      return {
+        accepted: false,
+        errorCode: 'NO_CHECK_IN',
+        reason: `Cannot Check Out: No valid Check-In record found for ${employee.name} on ${todayStr}.`,
+      };
+    }
+    if (existing.checkOutTime || existing.outTime) {
+      return {
+        accepted: false,
+        errorCode: 'DUPLICATE_CHECK_OUT',
+        reason: `Duplicate Check-Out blocked: ${employee.name} has already checked out on ${todayStr} at ${existing.checkOutTime || existing.outTime}.`,
+      };
+    }
+
+    const cfg = resolveEmployeeGeofenceConfig(employee);
+    try {
+      const resp = await fetch('/api/attendance/check-out', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          employeeId: employee.id,
+          employeeCode: employee.code,
+          employeeName: employee.name,
+          department: employee.department || 'Operations',
+          designation: employee.designation,
+          date: todayStr,
+          checkOutTime: timeHHmm,
+          latitude,
+          longitude,
+          accuracy,
+          assignedOfficeId: cfg.assignedOfficeId,
+          assignedOfficeName: cfg.assignedOfficeName,
+          officeAddress: cfg.officeAddress,
+          officeLatitude: cfg.officeLatitude,
+          officeLongitude: cfg.officeLongitude,
+          allowedRadiusMeters: cfg.allowedRadiusMeters,
+          locationStatus: cfg.locationStatus,
+          shiftStartTime: cfg.shiftStartTime,
+          gracePeriodMinutes: cfg.gracePeriodMinutes,
+          standardDailyHours: cfg.standardDailyHours,
+          maxGpsAccuracyMeters: cfg.maxGpsAccuracyMeters,
+          existingRecord: existing,
+        }),
+      });
+      const data = await resp.json();
+      if (data.accepted && data.record) {
+        const updatedRec: AttendanceRecord = data.record;
+        setAttendanceRecords((prev) => [
+          updatedRec,
+          ...prev.filter((a) => !(a.employeeId === employee.id && a.date === todayStr)),
+        ]);
+        updateRepLocation(employee.id, latitude, longitude, `${cfg.assignedOfficeName} (GPS Check-Out)`);
+        addAuditLog(
+          'GPS_CHECK_OUT_ACCEPTED',
+          'Attendance & Geofence',
+          `${employee.name} checked out at ${timeHHmm} (${data.distanceMeters}m from ${cfg.assignedOfficeName})`
+        );
+        return data;
+      }
+      if (data.rejectedAttempt) {
+        setRejectedAttendanceAttempts((prev) => [data.rejectedAttempt, ...prev].slice(0, 300));
+        addAuditLog(
+          'GPS_CHECK_OUT_REJECTED',
+          'Attendance & Geofence',
+          `Check-Out rejected for ${employee.name}: ${data.reason}`
+        );
+      }
+      return data;
+    } catch {
+      const validation = evaluateGeofenceAttendance({
+        employeeLatitude: latitude,
+        employeeLongitude: longitude,
+        gpsAccuracyMeters: accuracy,
+        officeLatitude: cfg.officeLatitude,
+        officeLongitude: cfg.officeLongitude,
+        allowedRadiusMeters: cfg.allowedRadiusMeters,
+        locationStatus: cfg.locationStatus,
+        maxGpsAccuracyMeters: cfg.maxGpsAccuracyMeters,
+      });
+      if (!validation.accepted) {
+        const rej: RejectedAttendanceAttempt = {
+          id: `att-rej-${Date.now()}`,
+          employeeId: employee.id,
+          employeeCode: employee.code,
+          employeeName: employee.name,
+          department: employee.department,
+          designation: employee.designation,
+          assignedOfficeId: cfg.assignedOfficeId,
+          assignedOfficeName: cfg.assignedOfficeName,
+          officeLatitude: cfg.officeLatitude,
+          officeLongitude: cfg.officeLongitude,
+          allowedRadiusMeters: validation.allowedRadiusMeters,
+          attemptType: 'Check Out',
+          attendanceDate: todayStr,
+          attemptTime: nowObj.toTimeString().slice(0, 8),
+          latitude,
+          longitude,
+          distanceMeters: validation.distanceMeters,
+          gpsAccuracyMeters: accuracy,
+          gpsValidationStatus: 'Rejected',
+          rejectionReason: validation.reason,
+          createdAt: nowObj.toISOString(),
+        };
+        setRejectedAttendanceAttempts((prev) => [rej, ...prev].slice(0, 300));
+        return {
+          accepted: false,
+          errorCode: validation.errorCode,
+          distanceMeters: validation.distanceMeters,
+          allowedRadiusMeters: validation.allowedRadiusMeters,
+          reason: validation.reason,
+          rejectedAttempt: rej,
+        };
+      }
+      const shiftCalc = calculateShiftAttendanceStatus({
+        checkInTime: existing.checkInTime || existing.inTime || '09:00',
+        checkOutTime: timeHHmm,
+        shiftStartTime: cfg.shiftStartTime,
+        gracePeriodMinutes: cfg.gracePeriodMinutes,
+        standardDailyHours: cfg.standardDailyHours,
+      });
+      const updatedRec: AttendanceRecord = {
+        ...existing,
+        outTime: timeHHmm,
+        checkOutTime: timeHHmm,
+        workHours: shiftCalc.totalWorkingHours,
+        overtimeHours: shiftCalc.overtimeHours,
+        status: shiftCalc.status,
+        checkOutLatitude: latitude,
+        checkOutLongitude: longitude,
+        checkOutDistanceMeters: validation.distanceMeters,
+        checkOutGpsAccuracyMeters: accuracy,
+        checkOutLocationText: `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`,
+        gpsValidationStatus: 'Accepted',
+        validationReason: validation.reason,
+        updatedAt: nowObj.toISOString(),
+      };
+      setAttendanceRecords((prev) => [
+        updatedRec,
+        ...prev.filter((a) => !(a.employeeId === employee.id && a.date === todayStr)),
+      ]);
+      return {
+        accepted: true,
+        distanceMeters: validation.distanceMeters,
+        allowedRadiusMeters: validation.allowedRadiusMeters,
+        reason: validation.reason,
+        record: updatedRec,
+      };
+    }
+  };
+
   const getEmployeeAttendanceSummary = (employeeId: string, monthYear: string) => {
     const [year, month] = monthYear.split('-').map(Number);
-    const recs = attendanceRecords.filter((a) => a.employeeId === employeeId && a.date.startsWith(monthYear));
+    const recs = attendanceRecords.filter(
+      (a) => (a.employeeId === employeeId || a.fieldForceId === employeeId) && a.date.startsWith(monthYear)
+    );
     const totalDays = new Date(year, month, 0).getDate();
     let present = 0;
     let absent = 0;
@@ -16864,6 +17733,8 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     let holiday = 0;
     let halfDay = 0;
     let overtimeHours = 0;
+    let totalWorkHours = 0;
+    let totalLateMinutes = 0;
 
     recs.forEach((r) => {
       if (r.status === 'Present') present++;
@@ -16871,14 +17742,22 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       else if (r.status === 'Late') {
         late++;
         present++;
-      } else if (r.status === 'Leave') leave++;
-      else if (r.status === 'Holiday') holiday++;
-      else if (r.status === 'Half-Day') {
+      } else if (r.status === 'Leave' || r.status === 'Paid Leave' || r.status === 'Unpaid Leave') {
+        leave++;
+      } else if (r.status === 'Holiday' || r.status === 'Weekly Off' || r.status === 'Public Holiday') {
+        holiday++;
+      } else if (r.status === 'Half-Day' || r.status === 'Half Day') {
         halfDay++;
         present += 0.5;
       }
       overtimeHours += r.overtimeHours || 0;
+      totalWorkHours += r.workHours || 0;
+      totalLateMinutes += r.lateDurationMinutes ?? r.lateMinutes ?? 0;
     });
+
+    const rejectedCount = rejectedAttendanceAttempts.filter(
+      (att) => att.employeeId === employeeId && att.attendanceDate.startsWith(monthYear)
+    ).length;
 
     return {
       totalDays,
@@ -16888,7 +17767,10 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       leaveDays: leave,
       holidays: holiday,
       halfDays: halfDay,
+      rejectedCount,
       totalOvertimeHours: overtimeHours,
+      totalWorkHours: Math.round(totalWorkHours * 100) / 100,
+      totalLateMinutes,
     };
   };
 
@@ -18375,8 +19257,15 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         deleteInstallmentPlan,
         clearInstallmentData,
         // Central Payroll Management
+        officeLocations,
+        addOfficeLocation,
+        updateOfficeLocation,
+        deleteOfficeLocation,
+        refreshOfficeLocations,
         salaryStructures,
         attendanceRecords,
+        rejectedAttendanceAttempts,
+        recordRejectedAttendanceAttempt,
         leaveRecords,
         advanceLoans,
         overtimeRecords,
@@ -18389,6 +19278,8 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         getEmployeeSalaryStructure,
         markAttendance,
         bulkMarkAttendance,
+        submitGpsCheckIn,
+        submitGpsCheckOut,
         getEmployeeAttendanceSummary,
         applyLeave,
         approveLeave,

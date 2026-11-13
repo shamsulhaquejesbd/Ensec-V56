@@ -120,8 +120,26 @@ export interface EmployeeSalaryStructure {
 }
 
 // --------------------------------------------------------------------------
-// 2. Attendance Records
+// 1B. Office Locations (GPS Geofencing Setup)
 // --------------------------------------------------------------------------
+export interface OfficeLocation {
+  id: string;
+  code?: string;
+  name: string;
+  address: string;
+  latitude: number;
+  longitude: number;
+  allowedRadiusMeters: number; // Default: 50
+  status: 'Active' | 'Inactive';
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+// --------------------------------------------------------------------------
+// 2. Attendance Records & GPS Geofence Validation
+// --------------------------------------------------------------------------
+export type GPSValidationStatus = 'Accepted' | 'Rejected' | 'Manual';
+
 export interface AttendanceRecord {
   id: string;
   fieldForceId?: string;
@@ -130,6 +148,7 @@ export interface AttendanceRecord {
   employeeName: string;
   employeeCategory?: EmployeeCategory;
   department?: string;
+  designation?: string;
   date: string; // YYYY-MM-DD
   status: AttendanceStatus;
   inTime?: string;
@@ -140,12 +159,60 @@ export interface AttendanceRecord {
   overtimeHours?: number;
   isLate?: boolean;
   lateMinutes?: number;
+  lateDurationMinutes?: number;
   isEarlyLeave?: boolean;
   earlyMinutes?: number;
   remarks?: string;
   recordedBy?: string;
   createdAt?: string;
   updatedAt?: string;
+
+  // GPS Geofencing Fields
+  assignedOfficeId?: string;
+  assignedOfficeName?: string;
+  officeLatitude?: number;
+  officeLongitude?: number;
+  allowedRadiusMeters?: number;
+
+  checkInLatitude?: number;
+  checkInLongitude?: number;
+  checkInDistanceMeters?: number;
+  checkInGpsAccuracyMeters?: number;
+  checkInLocationText?: string;
+
+  checkOutLatitude?: number;
+  checkOutLongitude?: number;
+  checkOutDistanceMeters?: number;
+  checkOutGpsAccuracyMeters?: number;
+  checkOutLocationText?: string;
+
+  gpsValidationStatus?: GPSValidationStatus;
+  validationReason?: string;
+}
+
+export interface RejectedAttendanceAttempt {
+  id: string;
+  employeeId: string;
+  employeeCode?: string;
+  employeeName: string;
+  department?: string;
+  designation?: string;
+  assignedOfficeId?: string;
+  assignedOfficeName?: string;
+  officeLatitude?: number;
+  officeLongitude?: number;
+  allowedRadiusMeters: number;
+  attemptType: 'Check In' | 'Check Out';
+  attendanceDate: string; // YYYY-MM-DD
+  attemptTime: string; // HH:mm:ss
+  latitude?: number;
+  longitude?: number;
+  distanceMeters?: number;
+  gpsAccuracyMeters?: number;
+  gpsValidationStatus: 'Rejected';
+  rejectionReason: string;
+  deviceInfo?: string;
+  createdAt: string;
 }
 
 // --------------------------------------------------------------------------
@@ -434,6 +501,9 @@ export interface PayrollSettings {
     hourlyRateMultiplier: number;
   };
   lateGracePeriodMinutes?: number;
+  shiftStartTime?: string; // e.g. '09:00'
+  shiftEndTime?: string;   // e.g. '18:00'
+  maxGpsAccuracyMeters?: number; // e.g. 100
   lateDaysForOneDayAbsent?: number; // e.g. 3 late days = 1 day absent deduction
   annualLeaveQuota?: number;
   casualLeaveQuota?: number;

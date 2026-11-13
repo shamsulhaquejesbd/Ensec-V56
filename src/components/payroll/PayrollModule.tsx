@@ -48,8 +48,23 @@ import {
   Gift,
   HelpCircle,
   UserCheck,
+  MapPin,
+  Navigation,
+  XCircle,
+  AlertTriangle,
+  FileSpreadsheet,
+  History,
 } from 'lucide-react';
+import * as XLSX from 'xlsx';
 import { useERP } from '../../context/ERPContext.tsx';
+import {
+  DEFAULT_GRACE_PERIOD_MINUTES,
+  DEFAULT_MAX_GPS_ACCURACY_METERS,
+  DEFAULT_SHIFT_END_TIME,
+  DEFAULT_SHIFT_START_TIME,
+  formatLateDuration,
+  parseTimeToMinutes,
+} from '../../lib/geofence.ts';
 import {
   EmployeeCategory,
   EmploymentType,
@@ -58,6 +73,7 @@ import {
   LeaveType,
   EmployeeSalaryStructure,
   AttendanceRecord,
+  RejectedAttendanceAttempt,
   LeaveRecord,
   AdvanceLoanRecord,
   OvertimeRecord,
@@ -88,8 +104,10 @@ export const PayrollModule: React.FC = () => {
   const {
     currentUser,
     fieldForceReps,
+    officeLocations,
     salaryStructures,
     attendanceRecords,
+    rejectedAttendanceAttempts,
     leaveRecords,
     advanceLoans,
     overtimeRecords,
@@ -130,6 +148,21 @@ export const PayrollModule: React.FC = () => {
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<string>('All');
   const [searchQuery, setSearchQuery] = useState<string>('');
 
+  // Attendance Report & GPS Audit Filter States
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const currentMonthStartIso = `${todayIso.slice(0, 7)}-01`;
+  const [attSubView, setAttSubView] = useState<'report' | 'daily_grid' | 'rejected'>('report');
+  const [attPeriodMode, setAttPeriodMode] = useState<'daily' | 'weekly' | 'monthly' | 'custom'>('monthly');
+  const [attDateFrom, setAttDateFrom] = useState<string>(currentMonthStartIso);
+  const [attDateTo, setAttDateTo] = useState<string>(todayIso);
+  const [attSearchQuery, setAttSearchQuery] = useState<string>('');
+  const [attDeptFilter, setAttDeptFilter] = useState<string>('All');
+  const [attDesignationFilter, setAttDesignationFilter] = useState<string>('All');
+  const [attOfficeFilter, setAttOfficeFilter] = useState<string>('All');
+  const [attStatusFilter, setAttStatusFilter] = useState<string>('All');
+  const [historyEmployee, setHistoryEmployee] = useState<FieldForceRep | null>(null);
+  const [settingsSavedNotice, setSettingsSavedNotice] = useState<boolean>(false);
+
   // Modals state
   const [showStructureModal, setShowStructureModal] = useState<boolean>(false);
   const [editingStructure, setEditingStructure] = useState<EmployeeSalaryStructure | null>(null);
@@ -137,7 +170,7 @@ export const PayrollModule: React.FC = () => {
 
   const [showAttendanceModal, setShowAttendanceModal] = useState<boolean>(false);
   const [showBulkAttendanceModal, setShowBulkAttendanceModal] = useState<boolean>(false);
-  const [selectedDateForAtt, setSelectedDateForAtt] = useState<string>(new Date().toISOString().slice(0, 10));
+  const [selectedDateForAtt, setSelectedDateForAtt] = useState<string>(todayIso);
 
   const [showLeaveModal, setShowLeaveModal] = useState<boolean>(false);
   const [showLoanModal, setShowLoanModal] = useState<boolean>(false);
@@ -225,6 +258,333 @@ export const PayrollModule: React.FC = () => {
     'Warehouse Employee',
     'Management Employee',
   ];
+
+  // Unique designations & offices for Attendance Report filters
+  const designationOptions = useMemo(() => {
+    const set = new Set<string>();
+    fieldForceReps.forEach((r) => {
+      if (r.designation) set.add(r.designation);
+    });
+    return ['All', ...Array.from(set)];
+  }, [fieldForceReps]);
+
+  const officeFilterOptions = useMemo(() => {
+    const set = new Set<string>();
+    officeLocations.forEach((o) => {
+      if (o.name) set.add(o.name);
+    });
+    fieldForceReps.forEach((r) => {
+      const officeName = r.assignedOfficeName || r.branchWorkplace;
+      if (officeName) set.add(officeName);
+    });
+    return ['All', ...Array.from(set)];
+  }, [officeLocations, fieldForceReps]);
+
+  const employeeLookupById = useMemo(() => {
+    const map = new Map<string, FieldForceRep>();
+    fieldForceReps.forEach((emp) => {
+      map.set(emp.id, emp);
+      if (emp.code) map.set(emp.code, emp);
+    });
+    return map;
+  }, [fieldForceReps]);
+
+  const applyAttendancePeriodPreset = (preset: 'daily' | 'weekly' | 'monthly') => {
+    setAttPeriodMode(preset);
+    if (preset === 'daily') {
+      setAttDateFrom(selectedDateForAtt);
+      setAttDateTo(selectedDateForAtt);
+    } else if (preset === 'weekly') {
+      const end = new Date(`${selectedDateForAtt}T00:00:00`);
+      const start = new Date(end);
+      start.setDate(end.getDate() - 6);
+      setAttDateFrom(start.toISOString().slice(0, 10));
+      setAttDateTo(selectedDateForAtt);
+    } else {
+      const baseMonth = selectedDateForAtt.slice(0, 7);
+      const [yr, mo] = baseMonth.split('-').map(Number);
+      const lastDay = new Date(yr, mo, 0).getDate();
+      setAttDateFrom(`${baseMonth}-01`);
+      setAttDateTo(`${baseMonth}-${String(lastDay).padStart(2, '0')}`);
+    }
+  };
+
+  const resolveRecordMeta = (rec: AttendanceRecord) => {
+    const emp =
+      employeeLookupById.get(rec.employeeId || rec.fieldForceId || '') ||
+      employeeLookupById.get(rec.employeeCode || '');
+    const officeName =
+      rec.assignedOfficeName || emp?.assignedOfficeName || emp?.branchWorkplace || 'Head Office';
+    const checkIn = rec.checkInTime || rec.inTime || '';
+    const checkOut = rec.checkOutTime || rec.outTime || '';
+    let workHrs = typeof rec.workHours === 'number' ? rec.workHours : 0;
+    if (!workHrs && checkIn && checkOut) {
+      const inM = parseTimeToMinutes(checkIn);
+      const outM = parseTimeToMinutes(checkOut);
+      if (inM !== null && outM !== null) {
+        const diff = outM >= inM ? outM - inM : outM + 1440 - inM;
+        workHrs = Math.round((diff / 60) * 100) / 100;
+      }
+    }
+    const lateMins = rec.lateDurationMinutes ?? rec.lateMinutes ?? 0;
+    const checkInLoc =
+      typeof rec.checkInLatitude === 'number' && typeof rec.checkInLongitude === 'number'
+        ? `${rec.checkInLatitude.toFixed(5)}, ${rec.checkInLongitude.toFixed(5)}`
+        : rec.checkInLocationText || '—';
+    const checkOutLoc =
+      typeof rec.checkOutLatitude === 'number' && typeof rec.checkOutLongitude === 'number'
+        ? `${rec.checkOutLatitude.toFixed(5)}, ${rec.checkOutLongitude.toFixed(5)}`
+        : rec.checkOutLocationText || '—';
+    return {
+      emp,
+      employeeCode: rec.employeeCode || emp?.code || rec.employeeId || '—',
+      employeeName: rec.employeeName || emp?.name || 'Unknown Employee',
+      department: rec.department || emp?.department || 'Operations',
+      designation: rec.designation || emp?.designation || 'Executive',
+      assignedOffice: officeName,
+      checkIn,
+      checkOut,
+      checkInLoc,
+      checkOutLoc,
+      workHours: workHrs,
+      lateMinutes: lateMins,
+      gpsStatus: rec.gpsValidationStatus || (typeof rec.checkInLatitude === 'number' ? 'Accepted' : 'Manual'),
+    };
+  };
+
+  const filteredReportRecords = useMemo(() => {
+    const q = attSearchQuery.trim().toLowerCase();
+    return attendanceRecords
+      .filter((rec) => {
+        if (attDateFrom && rec.date < attDateFrom) return false;
+        if (attDateTo && rec.date > attDateTo) return false;
+        const meta = resolveRecordMeta(rec);
+        if (q) {
+          const hay = `${meta.employeeCode} ${meta.employeeName} ${meta.department} ${meta.assignedOffice}`.toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        if (attDeptFilter !== 'All' && meta.department !== attDeptFilter) return false;
+        if (attDesignationFilter !== 'All' && meta.designation !== attDesignationFilter) return false;
+        if (attOfficeFilter !== 'All' && meta.assignedOffice !== attOfficeFilter) return false;
+        if (attStatusFilter !== 'All') {
+          if (attStatusFilter === 'Half Day') {
+            if (rec.status !== 'Half Day' && rec.status !== 'Half-Day') return false;
+          } else if (attStatusFilter === 'Leave') {
+            if (rec.status !== 'Leave' && rec.status !== 'Paid Leave' && rec.status !== 'Unpaid Leave') return false;
+          } else if (rec.status !== attStatusFilter) {
+            return false;
+          }
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        if (a.date !== b.date) return b.date.localeCompare(a.date);
+        const ta = a.checkInTime || a.inTime || '';
+        const tb = b.checkInTime || b.inTime || '';
+        return tb.localeCompare(ta);
+      });
+  }, [
+    attendanceRecords,
+    attDateFrom,
+    attDateTo,
+    attSearchQuery,
+    attDeptFilter,
+    attDesignationFilter,
+    attOfficeFilter,
+    attStatusFilter,
+    employeeLookupById,
+  ]);
+
+  const filteredRejectedAttempts = useMemo(() => {
+    const q = attSearchQuery.trim().toLowerCase();
+    return rejectedAttendanceAttempts
+      .filter((att) => {
+        if (attDateFrom && att.attendanceDate < attDateFrom) return false;
+        if (attDateTo && att.attendanceDate > attDateTo) return false;
+        const emp =
+          employeeLookupById.get(att.employeeId) ||
+          employeeLookupById.get(att.employeeCode || '');
+        const dept = att.department || emp?.department || 'Operations';
+        const desig = att.designation || emp?.designation || 'Executive';
+        const office = att.assignedOfficeName || emp?.assignedOfficeName || emp?.branchWorkplace || 'Head Office';
+        if (q) {
+          const hay = `${att.employeeCode || ''} ${att.employeeName} ${dept} ${office} ${att.rejectionReason}`.toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        if (attDeptFilter !== 'All' && dept !== attDeptFilter) return false;
+        if (attDesignationFilter !== 'All' && desig !== attDesignationFilter) return false;
+        if (attOfficeFilter !== 'All' && office !== attOfficeFilter) return false;
+        return true;
+      })
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }, [
+    rejectedAttendanceAttempts,
+    attDateFrom,
+    attDateTo,
+    attSearchQuery,
+    attDeptFilter,
+    attDesignationFilter,
+    attOfficeFilter,
+    employeeLookupById,
+  ]);
+
+  const employeePeriodSummaries = useMemo(() => {
+    const q = attSearchQuery.trim().toLowerCase();
+    return fieldForceReps
+      .filter((emp) => {
+        const office = emp.assignedOfficeName || emp.branchWorkplace || 'Head Office';
+        if (q) {
+          const hay = `${emp.code} ${emp.name} ${emp.department || ''} ${office}`.toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        if (attDeptFilter !== 'All' && (emp.department || 'Operations') !== attDeptFilter) return false;
+        if (attDesignationFilter !== 'All' && (emp.designation || 'Executive') !== attDesignationFilter) return false;
+        if (attOfficeFilter !== 'All' && office !== attOfficeFilter) return false;
+        return true;
+      })
+      .map((emp) => {
+        const empRecs = attendanceRecords.filter(
+          (r) =>
+            (r.employeeId === emp.id || r.fieldForceId === emp.id || (emp.code && r.employeeCode === emp.code)) &&
+            (!attDateFrom || r.date >= attDateFrom) &&
+            (!attDateTo || r.date <= attDateTo)
+        );
+        const empRejected = rejectedAttendanceAttempts.filter(
+          (att) =>
+            (att.employeeId === emp.id || (emp.code && att.employeeCode === emp.code)) &&
+            (!attDateFrom || att.attendanceDate >= attDateFrom) &&
+            (!attDateTo || att.attendanceDate <= attDateTo)
+        );
+        const presentDays = empRecs.filter((r) => r.status === 'Present').length;
+        const lateDays = empRecs.filter((r) => r.status === 'Late').length;
+        const halfDays = empRecs.filter((r) => r.status === 'Half Day' || r.status === 'Half-Day').length;
+        const absentDays = empRecs.filter((r) => r.status === 'Absent').length;
+        const leaveDays = empRecs.filter(
+          (r) => r.status === 'Leave' || r.status === 'Paid Leave' || r.status === 'Unpaid Leave'
+        ).length;
+        const totalWorkHours = empRecs.reduce((sum, r) => sum + resolveRecordMeta(r).workHours, 0);
+        const totalLateMinutes = empRecs.reduce((sum, r) => sum + (r.lateDurationMinutes ?? r.lateMinutes ?? 0), 0);
+        return {
+          emp,
+          assignedOffice: emp.assignedOfficeName || emp.branchWorkplace || 'Head Office',
+          totalDays: empRecs.length,
+          presentDays,
+          lateDays,
+          halfDays,
+          absentDays,
+          leaveDays,
+          totalWorkHours: Math.round(totalWorkHours * 100) / 100,
+          totalLateMinutes,
+          rejectedCount: empRejected.length,
+        };
+      });
+  }, [
+    fieldForceReps,
+    attendanceRecords,
+    rejectedAttendanceAttempts,
+    attDateFrom,
+    attDateTo,
+    attSearchQuery,
+    attDeptFilter,
+    attDesignationFilter,
+    attOfficeFilter,
+  ]);
+
+  const attReportStats = useMemo(() => {
+    const present = filteredReportRecords.filter((r) => r.status === 'Present').length;
+    const late = filteredReportRecords.filter((r) => r.status === 'Late').length;
+    const halfDay = filteredReportRecords.filter((r) => r.status === 'Half Day' || r.status === 'Half-Day').length;
+    const absent = filteredReportRecords.filter((r) => r.status === 'Absent').length;
+    const gpsVerified = filteredReportRecords.filter((r) => resolveRecordMeta(r).gpsStatus === 'Accepted').length;
+    return {
+      present,
+      late,
+      halfDay,
+      absent,
+      rejected: filteredRejectedAttempts.length,
+      gpsVerified,
+    };
+  }, [filteredReportRecords, filteredRejectedAttempts]);
+
+  const handleExportAttendanceExcel = () => {
+    const detailRows = filteredReportRecords.map((rec) => {
+      const meta = resolveRecordMeta(rec);
+      return {
+        'Employee ID': meta.employeeCode,
+        'Employee Name': meta.employeeName,
+        Department: meta.department,
+        'Assigned Office': meta.assignedOffice,
+        'Attendance Date': rec.date,
+        'Check-In Time': meta.checkIn || '—',
+        'Check-In Location': meta.checkInLoc,
+        'Check-In Distance (Meters)':
+          typeof rec.checkInDistanceMeters === 'number' ? Math.round(rec.checkInDistanceMeters * 10) / 10 : '—',
+        'Check-Out Time': meta.checkOut || '—',
+        'Check-Out Location': meta.checkOutLoc,
+        'Check-Out Distance (Meters)':
+          typeof rec.checkOutDistanceMeters === 'number' ? Math.round(rec.checkOutDistanceMeters * 10) / 10 : '—',
+        'Total Working Hours': meta.workHours > 0 ? meta.workHours : 0,
+        'Attendance Status': rec.status,
+        'Late Duration': formatLateDuration(meta.lateMinutes),
+        'GPS Validation Status': meta.gpsStatus,
+      };
+    });
+
+    const summaryRows = employeePeriodSummaries.map((s) => ({
+      'Employee ID': s.emp.code,
+      'Employee Name': s.emp.name,
+      Department: s.emp.department || 'Operations',
+      Designation: s.emp.designation || 'Executive',
+      'Assigned Office': s.assignedOffice,
+      'Date Range': `${attDateFrom} to ${attDateTo}`,
+      Present: s.presentDays,
+      Late: s.lateDays,
+      'Half Day': s.halfDays,
+      Absent: s.absentDays,
+      Leave: s.leaveDays,
+      'Total Hours': s.totalWorkHours,
+      'Total Late Duration': formatLateDuration(s.totalLateMinutes),
+      'Rejected GPS Attempts': s.rejectedCount,
+    }));
+
+    const rejectedRows = filteredRejectedAttempts.map((att) => ({
+      Date: att.attendanceDate,
+      Time: att.attemptTime,
+      'Employee ID': att.employeeCode || att.employeeId,
+      'Employee Name': att.employeeName,
+      Department: att.department || '—',
+      'Assigned Office': att.assignedOfficeName || '—',
+      'Attempt Type': att.attemptType,
+      'Captured Location':
+        typeof att.latitude === 'number' && typeof att.longitude === 'number'
+          ? `${att.latitude.toFixed(5)}, ${att.longitude.toFixed(5)}`
+          : 'Unavailable',
+      'Distance (Meters)':
+        typeof att.distanceMeters === 'number' ? Math.round(att.distanceMeters * 10) / 10 : '—',
+      'Allowed Radius (Meters)': att.allowedRadiusMeters,
+      'GPS Accuracy (Meters)':
+        typeof att.gpsAccuracyMeters === 'number' ? Math.round(att.gpsAccuracyMeters) : '—',
+      'GPS Validation Status': att.gpsValidationStatus,
+      'Rejection Reason': att.rejectionReason,
+    }));
+
+    const wb = XLSX.utils.book_new();
+    const wsDetail = XLSX.utils.json_to_sheet(
+      detailRows.length > 0
+        ? detailRows
+        : [{ Notice: `No attendance records found for ${attDateFrom} to ${attDateTo}` }]
+    );
+    const wsSummary = XLSX.utils.json_to_sheet(summaryRows);
+    const wsRejected = XLSX.utils.json_to_sheet(
+      rejectedRows.length > 0
+        ? rejectedRows
+        : [{ Notice: `No rejected GPS attempts recorded for ${attDateFrom} to ${attDateTo}` }]
+    );
+    XLSX.utils.book_append_sheet(wb, wsDetail, 'Attendance Report');
+    XLSX.utils.book_append_sheet(wb, wsSummary, 'Employee Summary');
+    XLSX.utils.book_append_sheet(wb, wsRejected, 'Rejected GPS Attempts');
+    XLSX.writeFile(wb, `Ensec_Attendance_Report_${attDateFrom}_to_${attDateTo}.xlsx`);
+  };
 
   // ==========================================
   // SECTION 1: DASHBOARD METRICS & CALCULATIONS
@@ -879,145 +1239,659 @@ export const PayrollModule: React.FC = () => {
       )}
 
       {/* ========================================================================= */}
-      {/* SECTION 3: ATTENDANCE MANAGEMENT                                          */}
+      {/* SECTION 3: ATTENDANCE MANAGEMENT & GPS GEOFENCE REPORT                    */}
       {/* ========================================================================= */}
       {activeTab === 'attendance' && (
         <div className="space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800">
+          {/* Header Bar & View Switcher */}
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs">
             <div>
-              <h2 className="text-sm font-bold text-slate-900 dark:text-white">
-                Daily Attendance & Biometric Grid
+              <h2 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <MapPin className="w-4 h-4 text-blue-600" />
+                <span>Attendance & GPS Geofencing Report</span>
               </h2>
-              <p className="text-xs text-slate-500">
-                Track Present, Absent, Late, Leave, and Overtime hours for automated monthly payroll deduction.
+              <p className="text-xs text-slate-500 mt-0.5">
+                Employee-wise GPS attendance verification, shift late calculation, period summaries, and rejected attempt audit.
               </p>
             </div>
-            <div className="flex items-center gap-2">
-              <input
-                type="date"
-                value={selectedDateForAtt}
-                onChange={(e) => setSelectedDateForAtt(e.target.value)}
-                className="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs font-semibold"
-              />
+
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="inline-flex rounded-xl bg-slate-100 dark:bg-slate-800 p-1 border border-slate-200 dark:border-slate-700">
+                <button
+                  onClick={() => setAttSubView('report')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                    attSubView === 'report'
+                      ? 'bg-white dark:bg-slate-900 text-blue-600 shadow-2xs'
+                      : 'text-slate-600 dark:text-slate-300 hover:text-slate-900'
+                  }`}
+                >
+                  Attendance Report
+                </button>
+                <button
+                  onClick={() => setAttSubView('daily_grid')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                    attSubView === 'daily_grid'
+                      ? 'bg-white dark:bg-slate-900 text-blue-600 shadow-2xs'
+                      : 'text-slate-600 dark:text-slate-300 hover:text-slate-900'
+                  }`}
+                >
+                  Daily Grid ({selectedDateForAtt})
+                </button>
+                <button
+                  onClick={() => setAttSubView('rejected')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+                    attSubView === 'rejected'
+                      ? 'bg-white dark:bg-slate-900 text-rose-600 shadow-2xs'
+                      : 'text-slate-600 dark:text-slate-300 hover:text-slate-900'
+                  }`}
+                >
+                  <XCircle className="w-3.5 h-3.5" />
+                  <span>Rejected Attempts ({filteredRejectedAttempts.length})</span>
+                </button>
+              </div>
+
               <button
-                onClick={() => {
-                  // Prepopulate bulk attendance with present for all staff
-                  const bulk = fieldForceReps.map((emp) => ({
-                    employeeId: emp.id,
-                    employeeCode: emp.code,
-                    employeeName: emp.name,
-                    date: selectedDateForAtt,
-                    status: 'Present' as AttendanceStatus,
-                    inTime: '09:00',
-                    outTime: '18:00',
-                    overtimeHours: 0,
-                  }));
-                  bulkMarkAttendance(bulk);
-                }}
-                className="px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-2xs"
+                onClick={handleExportAttendanceExcel}
+                className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-2xs"
               >
-                <CheckCircle2 className="w-3.5 h-3.5" />
-                <span>Mark All Present Today</span>
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                <span>Export Excel</span>
               </button>
             </div>
           </div>
 
-          {/* Attendance Table */}
-          <div className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xs overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead>
-                  <tr className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 text-slate-500 text-[11px] font-semibold uppercase">
-                    <th className="py-3 px-4">Employee</th>
-                    <th className="py-3 px-4">Department / Branch</th>
-                    <th className="py-3 px-4">Status on {selectedDateForAtt}</th>
-                    <th className="py-3 px-4">Check In</th>
-                    <th className="py-3 px-4">Check Out</th>
-                    <th className="py-3 px-4">Overtime</th>
-                    <th className="py-3 px-4 text-center">Monthly Summary ({selectedMonthYear})</th>
-                    <th className="py-3 px-4 text-right">Quick Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                  {fieldForceReps.map((emp) => {
-                    const todayRec = attendanceRecords.find(
-                      (a) => a.employeeId === emp.id && a.date === selectedDateForAtt
-                    );
-                    const summary = getEmployeeAttendanceSummary(emp.id, selectedMonthYear);
-                    const status = todayRec ? todayRec.status : 'Present';
+          {/* Search & Multi-Facet Filter Bar */}
+          <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 mr-1">Period View:</span>
+                {(['daily', 'weekly', 'monthly'] as const).map((preset) => (
+                  <button
+                    key={preset}
+                    onClick={() => applyAttendancePeriodPreset(preset)}
+                    className={`px-3 py-1 rounded-lg text-xs font-bold capitalize transition-all ${
+                      attPeriodMode === preset
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
+                    }`}
+                  >
+                    {preset}
+                  </button>
+                ))}
+              </div>
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <label className="text-slate-500 font-semibold">From</label>
+                <input
+                  type="date"
+                  value={attDateFrom}
+                  onChange={(e) => {
+                    setAttPeriodMode('custom');
+                    setAttDateFrom(e.target.value);
+                  }}
+                  className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 font-mono text-xs"
+                />
+                <label className="text-slate-500 font-semibold">To</label>
+                <input
+                  type="date"
+                  value={attDateTo}
+                  onChange={(e) => {
+                    setAttPeriodMode('custom');
+                    setAttDateTo(e.target.value);
+                  }}
+                  className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 font-mono text-xs"
+                />
+              </div>
+            </div>
 
-                    return (
-                      <tr key={emp.id} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40">
-                        <td className="py-3 px-4">
-                          <div className="font-bold text-slate-900 dark:text-white">{emp.name}</div>
-                          <span className="font-mono text-[10px] text-blue-600">{emp.code}</span>
-                        </td>
-                        <td className="py-3 px-4 text-slate-600 dark:text-slate-400">
-                          <div>{emp.department || 'Operations'}</div>
-                          <span className="text-[10px] text-slate-400">{emp.branchWorkplace || 'Head Office'}</span>
-                        </td>
-                        <td className="py-3 px-4">
-                          <span
-                            className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                              status === 'Present'
-                                ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
-                                : status === 'Absent'
-                                ? 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300'
-                                : status === 'Late'
-                                ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
-                                : 'bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300'
-                            }`}
-                          >
-                            {status}
-                          </span>
-                        </td>
-                        <td className="py-3 px-4 font-mono">{todayRec?.inTime || '09:00 AM'}</td>
-                        <td className="py-3 px-4 font-mono">{todayRec?.outTime || '06:00 PM'}</td>
-                        <td className="py-3 px-4 font-mono font-bold text-blue-600">
-                          {todayRec?.overtimeHours ? `${todayRec.overtimeHours} hrs` : '-'}
-                        </td>
-                        <td className="py-3 px-4 text-center">
-                          <div className="text-[11px] font-semibold">
-                            <span className="text-emerald-600 font-bold">{summary.presentDays}P</span> /{' '}
-                            <span className="text-rose-600 font-bold">{summary.absentDays}A</span> /{' '}
-                            <span className="text-amber-600">{summary.lateDays}L</span>
-                          </div>
-                        </td>
-                        <td className="py-3 px-4 text-right">
-                          <div className="inline-flex gap-1">
-                            {(['Present', 'Late', 'Absent'] as AttendanceStatus[]).map((st) => (
-                              <button
-                                key={st}
-                                onClick={() => {
-                                  markAttendance({
-                                    employeeId: emp.id,
-                                    employeeCode: emp.code,
-                                    employeeName: emp.name,
-                                    date: selectedDateForAtt,
-                                    status: st,
-                                    inTime: st === 'Late' ? '10:15' : '09:00',
-                                    outTime: '18:00',
-                                    overtimeHours: 0,
-                                  });
-                                }}
-                                className={`px-2 py-0.5 rounded text-[10px] font-bold transition-all ${
-                                  status === st
-                                    ? 'bg-blue-600 text-white'
-                                    : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-200'
-                                }`}
-                              >
-                                {st}
-                              </button>
-                            ))}
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5 text-xs">
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
+                <input
+                  type="text"
+                  value={attSearchQuery}
+                  onChange={(e) => setAttSearchQuery(e.target.value)}
+                  placeholder="Search Employee Name or ID..."
+                  className="w-full pl-8 pr-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs"
+                />
+              </div>
+
+              <select
+                value={attDeptFilter}
+                onChange={(e) => setAttDeptFilter(e.target.value)}
+                className="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs font-semibold"
+              >
+                {departmentOptions.map((dept) => (
+                  <option key={dept} value={dept}>
+                    Dept: {dept}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                value={attDesignationFilter}
+                onChange={(e) => setAttDesignationFilter(e.target.value)}
+                className="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs font-semibold"
+              >
+                {designationOptions.map((desig) => (
+                  <option key={desig} value={desig}>
+                    Designation: {desig}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                value={attOfficeFilter}
+                onChange={(e) => setAttOfficeFilter(e.target.value)}
+                className="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs font-semibold"
+              >
+                {officeFilterOptions.map((office) => (
+                  <option key={office} value={office}>
+                    Office: {office}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                value={attStatusFilter}
+                onChange={(e) => setAttStatusFilter(e.target.value)}
+                className="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs font-semibold"
+              >
+                <option value="All">Status: All</option>
+                <option value="Present">Status: Present</option>
+                <option value="Late">Status: Late</option>
+                <option value="Half Day">Status: Half Day</option>
+                <option value="Absent">Status: Absent</option>
+                <option value="Leave">Status: Leave</option>
+              </select>
             </div>
           </div>
+
+          {/* KPI Summary Strip */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+              <div className="text-[11px] font-semibold text-slate-500">Present</div>
+              <div className="text-xl font-black tabular-nums text-emerald-600 mt-0.5">{attReportStats.present}</div>
+            </div>
+            <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+              <div className="text-[11px] font-semibold text-slate-500">Late Arrivals</div>
+              <div className="text-xl font-black tabular-nums text-amber-600 mt-0.5">{attReportStats.late}</div>
+            </div>
+            <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+              <div className="text-[11px] font-semibold text-slate-500">Half Day</div>
+              <div className="text-xl font-black tabular-nums text-indigo-600 mt-0.5">{attReportStats.halfDay}</div>
+            </div>
+            <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+              <div className="text-[11px] font-semibold text-slate-500">Absent</div>
+              <div className="text-xl font-black tabular-nums text-rose-600 mt-0.5">{attReportStats.absent}</div>
+            </div>
+            <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+              <div className="text-[11px] font-semibold text-slate-500">GPS Verified</div>
+              <div className="text-xl font-black tabular-nums text-blue-600 mt-0.5">{attReportStats.gpsVerified}</div>
+            </div>
+            <div className="p-3.5 rounded-2xl bg-white dark:bg-slate-900 border border-rose-200 dark:border-rose-900/50">
+              <div className="text-[11px] font-semibold text-rose-600">Rejected GPS</div>
+              <div className="text-xl font-black tabular-nums text-rose-600 mt-0.5">{attReportStats.rejected}</div>
+            </div>
+          </div>
+
+          {/* SUB-VIEW 1: EMPLOYEE-WISE ATTENDANCE REPORT (15 COLUMNS + SUMMARY) */}
+          {attSubView === 'report' && (
+            <div className="space-y-4">
+              {/* Employee Summary Table (Daily / Weekly / Monthly Aggregation) */}
+              <div className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xs overflow-hidden">
+                <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+                  <div>
+                    <h3 className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wide">
+                      Employee Attendance Summary ({attDateFrom} to {attDateTo})
+                    </h3>
+                    <p className="text-[11px] text-slate-500">
+                      Click View History on any employee to inspect full check-in/out logs and rejected GPS attempts.
+                    </p>
+                  </div>
+                  <span className="text-xs font-mono font-bold text-slate-500">
+                    {employeePeriodSummaries.length} Employees
+                  </span>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 text-slate-500 text-[11px] font-semibold uppercase">
+                        <th className="py-2.5 px-3">Employee ID</th>
+                        <th className="py-2.5 px-3">Employee Name</th>
+                        <th className="py-2.5 px-3">Department</th>
+                        <th className="py-2.5 px-3">Assigned Office</th>
+                        <th className="py-2.5 px-3 text-center">Present</th>
+                        <th className="py-2.5 px-3 text-center">Late</th>
+                        <th className="py-2.5 px-3 text-center">Half Day</th>
+                        <th className="py-2.5 px-3 text-center">Absent</th>
+                        <th className="py-2.5 px-3 text-right">Work Hours</th>
+                        <th className="py-2.5 px-3 text-center">Rejected GPS</th>
+                        <th className="py-2.5 px-3 text-right">History</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                      {employeePeriodSummaries.map((row) => (
+                        <tr key={row.emp.id} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40">
+                          <td className="py-2.5 px-3 font-mono font-bold text-blue-600">{row.emp.code}</td>
+                          <td className="py-2.5 px-3">
+                            <div className="font-bold text-slate-900 dark:text-white">{row.emp.name}</div>
+                            <div className="text-[10px] text-slate-400">{row.emp.designation || 'Executive'}</div>
+                          </td>
+                          <td className="py-2.5 px-3 text-slate-600 dark:text-slate-400">
+                            {row.emp.department || 'Operations'}
+                          </td>
+                          <td className="py-2.5 px-3 text-slate-600 dark:text-slate-400">{row.assignedOffice}</td>
+                          <td className="py-2.5 px-3 text-center font-mono font-bold text-emerald-600 tabular-nums">
+                            {row.presentDays}
+                          </td>
+                          <td className="py-2.5 px-3 text-center font-mono font-bold text-amber-600 tabular-nums">
+                            {row.lateDays}
+                          </td>
+                          <td className="py-2.5 px-3 text-center font-mono font-bold text-indigo-600 tabular-nums">
+                            {row.halfDays}
+                          </td>
+                          <td className="py-2.5 px-3 text-center font-mono font-bold text-rose-600 tabular-nums">
+                            {row.absentDays}
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-mono font-semibold tabular-nums">
+                            {row.totalWorkHours} hrs
+                          </td>
+                          <td className="py-2.5 px-3 text-center font-mono font-bold text-rose-600 tabular-nums">
+                            {row.rejectedCount > 0 ? row.rejectedCount : '0'}
+                          </td>
+                          <td className="py-2.5 px-3 text-right">
+                            <button
+                              onClick={() => setHistoryEmployee(row.emp)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-blue-50 dark:hover:bg-blue-950 text-blue-600 font-bold text-[11px]"
+                            >
+                              <History className="w-3 h-3" />
+                              <span>History</span>
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Detailed 15-Column Employee-Wise Attendance Report Table */}
+              <div className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xs overflow-hidden">
+                <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+                  <h3 className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wide">
+                    Detailed Attendance & GPS Geofence Log ({filteredReportRecords.length} Records)
+                  </h3>
+                  <span className="text-[11px] text-slate-500">All 15 Audit Columns</span>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs whitespace-nowrap">
+                    <thead>
+                      <tr className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 text-slate-500 text-[10px] font-bold uppercase">
+                        <th className="py-2.5 px-3">1. Employee ID</th>
+                        <th className="py-2.5 px-3">2. Employee Name</th>
+                        <th className="py-2.5 px-3">3. Department</th>
+                        <th className="py-2.5 px-3">4. Assigned Office</th>
+                        <th className="py-2.5 px-3">5. Attendance Date</th>
+                        <th className="py-2.5 px-3">6. Check-In Time</th>
+                        <th className="py-2.5 px-3">7. Check-In Location</th>
+                        <th className="py-2.5 px-3 text-right">8. Check-In Distance (m)</th>
+                        <th className="py-2.5 px-3">9. Check-Out Time</th>
+                        <th className="py-2.5 px-3">10. Check-Out Location</th>
+                        <th className="py-2.5 px-3 text-right">11. Check-Out Distance (m)</th>
+                        <th className="py-2.5 px-3 text-right">12. Total Working Hours</th>
+                        <th className="py-2.5 px-3">13. Attendance Status</th>
+                        <th className="py-2.5 px-3">14. Late Duration</th>
+                        <th className="py-2.5 px-3">15. GPS Validation Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                      {filteredReportRecords.length === 0 ? (
+                        <tr>
+                          <td colSpan={15} className="py-8 text-center text-slate-500 text-xs">
+                            No attendance records match the selected date range or filters.
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredReportRecords.map((rec) => {
+                          const meta = resolveRecordMeta(rec);
+                          return (
+                            <tr key={rec.id} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40">
+                              <td className="py-2.5 px-3 font-mono font-bold text-blue-600">{meta.employeeCode}</td>
+                              <td className="py-2.5 px-3 font-bold text-slate-900 dark:text-white">
+                                {meta.emp ? (
+                                  <button
+                                    onClick={() => setHistoryEmployee(meta.emp!)}
+                                    className="hover:text-blue-600 text-left"
+                                  >
+                                    {meta.employeeName}
+                                  </button>
+                                ) : (
+                                  meta.employeeName
+                                )}
+                              </td>
+                              <td className="py-2.5 px-3 text-slate-600 dark:text-slate-400">{meta.department}</td>
+                              <td className="py-2.5 px-3 text-slate-600 dark:text-slate-400">{meta.assignedOffice}</td>
+                              <td className="py-2.5 px-3 font-mono tabular-nums">{rec.date}</td>
+                              <td className="py-2.5 px-3 font-mono tabular-nums">{meta.checkIn || '—'}</td>
+                              <td className="py-2.5 px-3 font-mono text-[11px] tabular-nums text-slate-600 dark:text-slate-400">
+                                {meta.checkInLoc}
+                              </td>
+                              <td className="py-2.5 px-3 font-mono text-right tabular-nums">
+                                {typeof rec.checkInDistanceMeters === 'number'
+                                  ? `${Math.round(rec.checkInDistanceMeters * 10) / 10} m`
+                                  : '—'}
+                              </td>
+                              <td className="py-2.5 px-3 font-mono tabular-nums">{meta.checkOut || '—'}</td>
+                              <td className="py-2.5 px-3 font-mono text-[11px] tabular-nums text-slate-600 dark:text-slate-400">
+                                {meta.checkOutLoc}
+                              </td>
+                              <td className="py-2.5 px-3 font-mono text-right tabular-nums">
+                                {typeof rec.checkOutDistanceMeters === 'number'
+                                  ? `${Math.round(rec.checkOutDistanceMeters * 10) / 10} m`
+                                  : '—'}
+                              </td>
+                              <td className="py-2.5 px-3 font-mono text-right font-bold tabular-nums">
+                                {meta.workHours > 0 ? `${meta.workHours.toFixed(2)} hrs` : '—'}
+                              </td>
+                              <td className="py-2.5 px-3">
+                                <span
+                                  className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                                    rec.status === 'Present'
+                                      ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
+                                      : rec.status === 'Late'
+                                      ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
+                                      : rec.status === 'Absent'
+                                      ? 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300'
+                                      : 'bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300'
+                                  }`}
+                                >
+                                  {rec.status}
+                                </span>
+                              </td>
+                              <td className="py-2.5 px-3 font-mono text-[11px] text-amber-700 dark:text-amber-300">
+                                {formatLateDuration(meta.lateMinutes)}
+                              </td>
+                              <td className="py-2.5 px-3">
+                                <span
+                                  className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                                    meta.gpsStatus === 'Accepted'
+                                      ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
+                                      : meta.gpsStatus === 'Rejected'
+                                      ? 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300'
+                                      : 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
+                                  }`}
+                                >
+                                  {meta.gpsStatus}
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* SUB-VIEW 2: DAILY ATTENDANCE & BIOMETRIC/ADMIN OVERRIDE GRID */}
+          {attSubView === 'daily_grid' && (
+            <div className="space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                    Daily Attendance & Biometric / Admin Override Grid
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Manage daily statuses for payroll calculations alongside live GPS check-ins.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="date"
+                    value={selectedDateForAtt}
+                    onChange={(e) => setSelectedDateForAtt(e.target.value)}
+                    className="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs font-semibold"
+                  />
+                  <button
+                    onClick={() => {
+                      const bulk = fieldForceReps.map((emp) => ({
+                        employeeId: emp.id,
+                        employeeCode: emp.code,
+                        employeeName: emp.name,
+                        department: emp.department,
+                        designation: emp.designation,
+                        assignedOfficeId: emp.assignedOfficeId,
+                        assignedOfficeName: emp.assignedOfficeName || emp.branchWorkplace,
+                        date: selectedDateForAtt,
+                        status: 'Present' as AttendanceStatus,
+                        inTime: emp.shiftStartTime || payrollSettings?.shiftStartTime || DEFAULT_SHIFT_START_TIME,
+                        outTime: emp.shiftEndTime || payrollSettings?.shiftEndTime || DEFAULT_SHIFT_END_TIME,
+                        overtimeHours: 0,
+                        gpsValidationStatus: 'Manual' as const,
+                      }));
+                      bulkMarkAttendance(bulk);
+                    }}
+                    className="px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-2xs"
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>Mark All Present ({selectedDateForAtt})</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xs overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 text-slate-500 text-[11px] font-semibold uppercase">
+                        <th className="py-3 px-4">Employee</th>
+                        <th className="py-3 px-4">Department / Assigned Office</th>
+                        <th className="py-3 px-4">Status ({selectedDateForAtt})</th>
+                        <th className="py-3 px-4">Check In / Distance</th>
+                        <th className="py-3 px-4">Check Out / Distance</th>
+                        <th className="py-3 px-4">GPS Validation</th>
+                        <th className="py-3 px-4 text-center">Monthly Summary ({selectedMonthYear})</th>
+                        <th className="py-3 px-4 text-right">Quick Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                      {fieldForceReps.map((emp) => {
+                        const todayRec = attendanceRecords.find(
+                          (a) =>
+                            (a.employeeId === emp.id || a.fieldForceId === emp.id || a.employeeCode === emp.code) &&
+                            a.date === selectedDateForAtt
+                        );
+                        const summary = getEmployeeAttendanceSummary(emp.id, selectedMonthYear);
+                        const status = todayRec ? todayRec.status : 'Absent';
+                        const gpsStatus = todayRec?.gpsValidationStatus || (todayRec ? 'Manual' : '—');
+
+                        return (
+                          <tr key={emp.id} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40">
+                            <td className="py-3 px-4">
+                              <div className="font-bold text-slate-900 dark:text-white">{emp.name}</div>
+                              <span className="font-mono text-[10px] text-blue-600">{emp.code}</span>
+                            </td>
+                            <td className="py-3 px-4 text-slate-600 dark:text-slate-400">
+                              <div>{emp.department || 'Operations'}</div>
+                              <span className="text-[10px] text-slate-400">
+                                {emp.assignedOfficeName || emp.branchWorkplace || 'Head Office'}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4">
+                              <span
+                                className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                                  status === 'Present'
+                                    ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
+                                    : status === 'Absent'
+                                    ? 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300'
+                                    : status === 'Late'
+                                    ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
+                                    : 'bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300'
+                                }`}
+                              >
+                                {todayRec ? status : 'Unmarked'}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4 font-mono tabular-nums">
+                              <div>{todayRec?.checkInTime || todayRec?.inTime || '—'}</div>
+                              {typeof todayRec?.checkInDistanceMeters === 'number' && (
+                                <span className="text-[10px] text-emerald-600">
+                                  {Math.round(todayRec.checkInDistanceMeters)}m from office
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-3 px-4 font-mono tabular-nums">
+                              <div>{todayRec?.checkOutTime || todayRec?.outTime || '—'}</div>
+                              {typeof todayRec?.checkOutDistanceMeters === 'number' && (
+                                <span className="text-[10px] text-emerald-600">
+                                  {Math.round(todayRec.checkOutDistanceMeters)}m from office
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-3 px-4">
+                              <span
+                                className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                                  gpsStatus === 'Accepted'
+                                    ? 'bg-emerald-100 text-emerald-800'
+                                    : gpsStatus === 'Rejected'
+                                    ? 'bg-rose-100 text-rose-800'
+                                    : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
+                                }`}
+                              >
+                                {gpsStatus}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4 text-center">
+                              <div className="text-[11px] font-semibold tabular-nums">
+                                <span className="text-emerald-600 font-bold">{summary.presentDays}P</span> /{' '}
+                                <span className="text-rose-600 font-bold">{summary.absentDays}A</span> /{' '}
+                                <span className="text-amber-600">{summary.lateDays}L</span>
+                              </div>
+                            </td>
+                            <td className="py-3 px-4 text-right">
+                              <div className="inline-flex gap-1">
+                                {(['Present', 'Late', 'Half Day', 'Absent'] as AttendanceStatus[]).map((st) => (
+                                  <button
+                                    key={st}
+                                    onClick={() => {
+                                      markAttendance({
+                                        employeeId: emp.id,
+                                        employeeCode: emp.code,
+                                        employeeName: emp.name,
+                                        department: emp.department,
+                                        designation: emp.designation,
+                                        assignedOfficeId: emp.assignedOfficeId,
+                                        assignedOfficeName: emp.assignedOfficeName || emp.branchWorkplace,
+                                        date: selectedDateForAtt,
+                                        status: st,
+                                        inTime: st === 'Late' ? '10:15' : emp.shiftStartTime || '09:00',
+                                        outTime: st === 'Half Day' ? '13:00' : emp.shiftEndTime || '18:00',
+                                        overtimeHours: 0,
+                                        gpsValidationStatus: 'Manual',
+                                      });
+                                    }}
+                                    className={`px-2 py-0.5 rounded text-[10px] font-bold transition-all ${
+                                      todayRec && status === st
+                                        ? 'bg-blue-600 text-white'
+                                        : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-200'
+                                    }`}
+                                  >
+                                    {st}
+                                  </button>
+                                ))}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* SUB-VIEW 3: SEPARATE REJECTED GPS ATTENDANCE ATTEMPTS AUDIT LOG */}
+          {attSubView === 'rejected' && (
+            <div className="rounded-2xl bg-white dark:bg-slate-900 border border-rose-200 dark:border-rose-900/50 shadow-2xs overflow-hidden">
+              <div className="px-4 py-3 border-b border-rose-100 dark:border-rose-900/40 bg-rose-50/60 dark:bg-rose-950/20 flex items-center justify-between">
+                <div>
+                  <h3 className="text-xs font-bold text-rose-900 dark:text-rose-200 flex items-center gap-2 uppercase tracking-wide">
+                    <AlertTriangle className="w-4 h-4 text-rose-600" />
+                    <span>Rejected GPS Attendance Attempts ({filteredRejectedAttempts.length})</span>
+                  </h3>
+                  <p className="text-[11px] text-rose-700 dark:text-rose-300 mt-0.5">
+                    Out-of-geofence punches, poor GPS signal attempts, or blocked requests are audited here and never marked Present.
+                  </p>
+                </div>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs whitespace-nowrap">
+                  <thead>
+                    <tr className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 text-slate-500 text-[10px] font-bold uppercase">
+                      <th className="py-2.5 px-3">Date & Time</th>
+                      <th className="py-2.5 px-3">Employee ID</th>
+                      <th className="py-2.5 px-3">Employee Name</th>
+                      <th className="py-2.5 px-3">Assigned Office</th>
+                      <th className="py-2.5 px-3">Attempt Type</th>
+                      <th className="py-2.5 px-3">Captured Coordinates</th>
+                      <th className="py-2.5 px-3 text-right">Distance / Limit</th>
+                      <th className="py-2.5 px-3 text-right">GPS Accuracy</th>
+                      <th className="py-2.5 px-3">Status</th>
+                      <th className="py-2.5 px-3">Rejection Reason</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {filteredRejectedAttempts.length === 0 ? (
+                      <tr>
+                        <td colSpan={10} className="py-8 text-center text-slate-500 text-xs">
+                          No rejected GPS attendance attempts recorded for the active date range.
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredRejectedAttempts.map((att) => (
+                        <tr key={att.id} className="hover:bg-rose-50/40 dark:hover:bg-rose-950/10">
+                          <td className="py-2.5 px-3 font-mono tabular-nums">
+                            {att.attendanceDate} {att.attemptTime}
+                          </td>
+                          <td className="py-2.5 px-3 font-mono font-bold text-blue-600">
+                            {att.employeeCode || att.employeeId}
+                          </td>
+                          <td className="py-2.5 px-3 font-bold text-slate-900 dark:text-white">{att.employeeName}</td>
+                          <td className="py-2.5 px-3 text-slate-600 dark:text-slate-400">
+                            {att.assignedOfficeName || 'Head Office'}
+                          </td>
+                          <td className="py-2.5 px-3 font-semibold">{att.attemptType}</td>
+                          <td className="py-2.5 px-3 font-mono text-[11px] tabular-nums text-slate-600 dark:text-slate-400">
+                            {typeof att.latitude === 'number' && typeof att.longitude === 'number'
+                              ? `${att.latitude.toFixed(5)}, ${att.longitude.toFixed(5)}`
+                              : 'Unavailable'}
+                          </td>
+                          <td className="py-2.5 px-3 font-mono text-right font-bold text-rose-600 tabular-nums">
+                            {typeof att.distanceMeters === 'number' ? `${Math.round(att.distanceMeters)}m` : '—'} /{' '}
+                            {att.allowedRadiusMeters}m
+                          </td>
+                          <td className="py-2.5 px-3 font-mono text-right tabular-nums">
+                            {typeof att.gpsAccuracyMeters === 'number' ? `±${Math.round(att.gpsAccuracyMeters)}m` : '—'}
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300">
+                              {att.gpsValidationStatus}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3 text-xs text-rose-700 dark:text-rose-300 max-w-xs truncate" title={att.rejectionReason}>
+                            {att.rejectionReason}
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -2203,11 +3077,86 @@ export const PayrollModule: React.FC = () => {
                   className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 font-bold"
                 />
               </div>
+
+              {/* Shift & GPS Geofence Rules */}
+              <div className="sm:col-span-2 pt-3 mt-1 border-t border-slate-100 dark:border-slate-800">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
+                  <Navigation className="w-3.5 h-3.5 text-blue-600" />
+                  <span>Shift Timing & GPS Geofence Validation Thresholds</span>
+                </h3>
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  Default Shift Start Time
+                </label>
+                <input
+                  type="time"
+                  value={payrollSettings?.shiftStartTime || DEFAULT_SHIFT_START_TIME}
+                  onChange={(e) => updatePayrollSettings({ shiftStartTime: e.target.value })}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 font-bold font-mono"
+                />
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  Default Shift End Time
+                </label>
+                <input
+                  type="time"
+                  value={payrollSettings?.shiftEndTime || DEFAULT_SHIFT_END_TIME}
+                  onChange={(e) => updatePayrollSettings({ shiftEndTime: e.target.value })}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 font-bold font-mono"
+                />
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  Late Grace Period (Minutes)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  max={120}
+                  value={payrollSettings?.lateGracePeriodMinutes ?? DEFAULT_GRACE_PERIOD_MINUTES}
+                  onChange={(e) =>
+                    updatePayrollSettings({ lateGracePeriodMinutes: Math.max(0, Number(e.target.value) || 0) })
+                  }
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 font-bold font-mono"
+                />
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  Max Allowed GPS Accuracy (Meters)
+                </label>
+                <input
+                  type="number"
+                  min={15}
+                  max={500}
+                  value={payrollSettings?.maxGpsAccuracyMeters ?? DEFAULT_MAX_GPS_ACCURACY_METERS}
+                  onChange={(e) =>
+                    updatePayrollSettings({ maxGpsAccuracyMeters: Math.max(15, Number(e.target.value) || 100) })
+                  }
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 font-bold font-mono"
+                />
+              </div>
             </div>
 
-            <div className="pt-4 border-t border-slate-100 dark:border-slate-800 flex items-center justify-end">
+            <div className="pt-4 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between">
+              <div>
+                {settingsSavedNotice && (
+                  <span className="text-xs font-bold text-emerald-600 flex items-center gap-1.5">
+                    <CheckCircle2 className="w-4 h-4" />
+                    Payroll, Shift & GPS settings saved.
+                  </span>
+                )}
+              </div>
               <button
-                onClick={() => alert('Payroll settings saved successfully!')}
+                onClick={() => {
+                  setSettingsSavedNotice(true);
+                  setTimeout(() => setSettingsSavedNotice(false), 3000);
+                }}
                 className="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow-xs"
               >
                 Save Payroll Rules
@@ -2739,6 +3688,179 @@ export const PayrollModule: React.FC = () => {
               >
                 Post Disbursement
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODAL: EMPLOYEE COMPLETE ATTENDANCE HISTORY & GPS LOG                     */}
+      {/* ========================================================================= */}
+      {historyEmployee && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="w-full max-w-4xl max-h-[88vh] flex flex-col bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden text-xs">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200 dark:border-slate-800">
+              <div>
+                <h3 className="font-bold text-sm text-slate-900 dark:text-white flex items-center gap-2">
+                  <History className="w-4 h-4 text-blue-600" />
+                  <span>
+                    Attendance History: {historyEmployee.name} ({historyEmployee.code})
+                  </span>
+                </h3>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  {historyEmployee.department || 'Operations'} • {historyEmployee.designation || 'Executive'} • Office:{' '}
+                  {historyEmployee.assignedOfficeName || historyEmployee.branchWorkplace || 'Head Office'} (
+                  {historyEmployee.allowedRadiusMeters ?? 50}m radius)
+                </p>
+              </div>
+              <button
+                onClick={() => setHistoryEmployee(null)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 overflow-y-auto space-y-4">
+              {(() => {
+                const empAllLogs = attendanceRecords
+                  .filter(
+                    (r) =>
+                      r.employeeId === historyEmployee.id ||
+                      r.fieldForceId === historyEmployee.id ||
+                      r.employeeCode === historyEmployee.code
+                  )
+                  .sort((a, b) => b.date.localeCompare(a.date));
+                const empAllRejected = rejectedAttendanceAttempts
+                  .filter((a) => a.employeeId === historyEmployee.id || a.employeeCode === historyEmployee.code)
+                  .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+
+                return (
+                  <>
+                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
+                      <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900/50">
+                        <div className="text-[10px] font-bold uppercase text-emerald-700 dark:text-emerald-300">Present</div>
+                        <div className="text-lg font-black font-mono text-emerald-700 dark:text-emerald-300">
+                          {empAllLogs.filter((r) => r.status === 'Present').length}
+                        </div>
+                      </div>
+                      <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/50">
+                        <div className="text-[10px] font-bold uppercase text-amber-700 dark:text-amber-300">Late</div>
+                        <div className="text-lg font-black font-mono text-amber-700 dark:text-amber-300">
+                          {empAllLogs.filter((r) => r.status === 'Late').length}
+                        </div>
+                      </div>
+                      <div className="p-3 rounded-xl bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-900/50">
+                        <div className="text-[10px] font-bold uppercase text-indigo-700 dark:text-indigo-300">Half Day</div>
+                        <div className="text-lg font-black font-mono text-indigo-700 dark:text-indigo-300">
+                          {empAllLogs.filter((r) => r.status === 'Half Day' || r.status === 'Half-Day').length}
+                        </div>
+                      </div>
+                      <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/50">
+                        <div className="text-[10px] font-bold uppercase text-rose-700 dark:text-rose-300">Absent</div>
+                        <div className="text-lg font-black font-mono text-rose-700 dark:text-rose-300">
+                          {empAllLogs.filter((r) => r.status === 'Absent').length}
+                        </div>
+                      </div>
+                      <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
+                        <div className="text-[10px] font-bold uppercase text-slate-600 dark:text-slate-300">Rejected GPS</div>
+                        <div className="text-lg font-black font-mono text-rose-600">{empAllRejected.length}</div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-slate-200 dark:border-slate-800 overflow-x-auto">
+                      <table className="w-full text-left text-xs whitespace-nowrap">
+                        <thead>
+                          <tr className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 text-[10px] font-bold uppercase text-slate-500">
+                            <th className="py-2 px-3">Date</th>
+                            <th className="py-2 px-3">Check-In</th>
+                            <th className="py-2 px-3">In Dist</th>
+                            <th className="py-2 px-3">Check-Out</th>
+                            <th className="py-2 px-3">Out Dist</th>
+                            <th className="py-2 px-3 text-right">Hours</th>
+                            <th className="py-2 px-3">Status</th>
+                            <th className="py-2 px-3">Late</th>
+                            <th className="py-2 px-3">GPS</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                          {empAllLogs.length === 0 ? (
+                            <tr>
+                              <td colSpan={9} className="py-6 text-center text-slate-500">
+                                No attendance logs found for this employee yet.
+                              </td>
+                            </tr>
+                          ) : (
+                            empAllLogs.map((rec) => {
+                              const meta = resolveRecordMeta(rec);
+                              return (
+                                <tr key={rec.id}>
+                                  <td className="py-2 px-3 font-mono tabular-nums">{rec.date}</td>
+                                  <td className="py-2 px-3 font-mono tabular-nums">{meta.checkIn || '—'}</td>
+                                  <td className="py-2 px-3 font-mono tabular-nums">
+                                    {typeof rec.checkInDistanceMeters === 'number'
+                                      ? `${Math.round(rec.checkInDistanceMeters)}m`
+                                      : '—'}
+                                  </td>
+                                  <td className="py-2 px-3 font-mono tabular-nums">{meta.checkOut || '—'}</td>
+                                  <td className="py-2 px-3 font-mono tabular-nums">
+                                    {typeof rec.checkOutDistanceMeters === 'number'
+                                      ? `${Math.round(rec.checkOutDistanceMeters)}m`
+                                      : '—'}
+                                  </td>
+                                  <td className="py-2 px-3 font-mono text-right tabular-nums">
+                                    {meta.workHours > 0 ? `${meta.workHours.toFixed(2)}h` : '—'}
+                                  </td>
+                                  <td className="py-2 px-3 font-bold">{rec.status}</td>
+                                  <td className="py-2 px-3 font-mono text-amber-600">
+                                    {formatLateDuration(meta.lateMinutes)}
+                                  </td>
+                                  <td className="py-2 px-3 font-bold">{meta.gpsStatus}</td>
+                                </tr>
+                              );
+                            })
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {empAllRejected.length > 0 && (
+                      <div className="space-y-2">
+                        <h4 className="text-xs font-bold text-rose-700 dark:text-rose-300 uppercase">
+                          Rejected GPS Attempts ({empAllRejected.length})
+                        </h4>
+                        <div className="rounded-xl border border-rose-200 dark:border-rose-900/50 overflow-x-auto">
+                          <table className="w-full text-left text-xs whitespace-nowrap">
+                            <thead>
+                              <tr className="bg-rose-50 dark:bg-rose-950/30 border-b border-rose-200 dark:border-rose-900/50 text-[10px] font-bold uppercase text-rose-700">
+                                <th className="py-2 px-3">Date & Time</th>
+                                <th className="py-2 px-3">Action</th>
+                                <th className="py-2 px-3">Distance</th>
+                                <th className="py-2 px-3">Reason</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-rose-100 dark:divide-rose-900/30">
+                              {empAllRejected.map((att) => (
+                                <tr key={att.id}>
+                                  <td className="py-2 px-3 font-mono">
+                                    {att.attendanceDate} {att.attemptTime}
+                                  </td>
+                                  <td className="py-2 px-3 font-bold">{att.attemptType}</td>
+                                  <td className="py-2 px-3 font-mono text-rose-600">
+                                    {typeof att.distanceMeters === 'number' ? `${Math.round(att.distanceMeters)}m` : '—'} /{' '}
+                                    {att.allowedRadiusMeters}m
+                                  </td>
+                                  <td className="py-2 px-3 text-rose-700 dark:text-rose-300">{att.rejectionReason}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
             </div>
           </div>
         </div>

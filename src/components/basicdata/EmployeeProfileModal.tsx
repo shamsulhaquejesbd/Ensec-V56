@@ -31,9 +31,11 @@ import {
   Gift,
   HelpCircle,
   UserCheck,
+  Navigation,
 } from 'lucide-react';
 import { FieldForceRep } from '../../types/erp';
 import { useERP } from '../../context/ERPContext';
+import { formatLateDuration } from '../../lib/geofence.ts';
 
 interface EmployeeProfileModalProps {
   employee: FieldForceRep;
@@ -65,6 +67,8 @@ export const EmployeeProfileModal: React.FC<EmployeeProfileModalProps> = ({
     overtimeRecords,
     bonusRecords,
     monthlyPayrollRuns,
+    rejectedAttendanceAttempts,
+    getEmployeeAttendanceSummary,
     formatCurrency,
   } = useERP();
 
@@ -72,12 +76,32 @@ export const EmployeeProfileModal: React.FC<EmployeeProfileModalProps> = ({
 
   // Associated Data Lookups
   const salaryStructure = useMemo(() => {
-    return (salaryStructures || []).find((s) => s.fieldForceId === employee.id);
+    return (salaryStructures || []).find((s) => s.fieldForceId === employee.id || s.employeeId === employee.id);
   }, [salaryStructures, employee.id]);
 
   const empAttendance = useMemo(() => {
-    return (attendanceRecords || []).filter((a) => a.fieldForceId === employee.id);
-  }, [attendanceRecords, employee.id]);
+    return (attendanceRecords || [])
+      .filter(
+        (a) =>
+          a.fieldForceId === employee.id ||
+          a.employeeId === employee.id ||
+          (employee.code && a.employeeCode === employee.code)
+      )
+      .sort((a, b) => b.date.localeCompare(a.date));
+  }, [attendanceRecords, employee.id, employee.code]);
+
+  const empRejectedAttempts = useMemo(() => {
+    return (rejectedAttendanceAttempts || []).filter(
+      (r) => r.employeeId === employee.id || (employee.code && r.employeeCode === employee.code)
+    );
+  }, [rejectedAttendanceAttempts, employee.id, employee.code]);
+
+  const currentMonthStr = new Date().toISOString().slice(0, 7);
+  const empAttSummary = useMemo(() => {
+    return getEmployeeAttendanceSummary
+      ? getEmployeeAttendanceSummary(employee.id, currentMonthStr)
+      : { presentDays: 0, lateDays: 0, absentDays: 0, halfDays: 0, leaveDays: 0, totalDays: 30 };
+  }, [getEmployeeAttendanceSummary, employee.id, currentMonthStr]);
 
   const empLeaves = useMemo(() => {
     return (leaveRecords || []).filter((l) => l.fieldForceId === employee.id);
@@ -670,76 +694,152 @@ export const EmployeeProfileModal: React.FC<EmployeeProfileModalProps> = ({
             </div>
           )}
 
-          {/* TAB 5: ATTENDANCE HISTORY */}
+          {/* TAB 5: ATTENDANCE HISTORY & GPS GEOFENCING */}
           {activeTab === 'attendance' && (
             <div className="space-y-4">
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {/* Assigned Office Geofence Banner */}
+              <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 flex flex-wrap items-center justify-between gap-3 text-xs">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 flex items-center justify-center shrink-0">
+                    <Navigation className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="font-bold text-slate-900 dark:text-white">
+                      {employee.assignedOfficeName || employee.branchWorkplace || 'Head Office (Gulshan HQ)'}
+                    </div>
+                    <div className="text-[11px] text-slate-500">
+                      {employee.officeAddress || 'Configured Office Geofence'}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-4 font-mono text-[11px] tabular-nums">
+                  <div>
+                    <span className="text-[10px] uppercase text-slate-400 block">Coordinates</span>
+                    <span className="font-semibold text-slate-800 dark:text-slate-200">
+                      {employee.officeLatitude ? Number(employee.officeLatitude).toFixed(5) : '23.81030'},{' '}
+                      {employee.officeLongitude ? Number(employee.officeLongitude).toFixed(5) : '90.41250'}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] uppercase text-slate-400 block">Allowed Radius</span>
+                    <span className="font-bold text-emerald-600 dark:text-emerald-400">
+                      {employee.allowedRadiusMeters || 50} Meters
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
                 <div className="p-3 rounded-2xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 text-center">
-                  <span className="text-[10px] uppercase font-bold text-emerald-600">Present Days</span>
-                  <div className="text-xl font-black text-emerald-700 dark:text-emerald-300 mt-1">
-                    24 / 26
+                  <span className="text-[10px] uppercase font-bold text-emerald-600">Present ({currentMonthStr})</span>
+                  <div className="text-xl font-black text-emerald-700 dark:text-emerald-300 mt-1 tabular-nums">
+                    {empAttSummary.presentDays}
                   </div>
                 </div>
                 <div className="p-3 rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 text-center">
                   <span className="text-[10px] uppercase font-bold text-amber-600">Late Days</span>
-                  <div className="text-xl font-black text-amber-700 dark:text-amber-300 mt-1">1</div>
+                  <div className="text-xl font-black text-amber-700 dark:text-amber-300 mt-1 tabular-nums">
+                    {empAttSummary.lateDays}
+                  </div>
+                </div>
+                <div className="p-3 rounded-2xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800 text-center">
+                  <span className="text-[10px] uppercase font-bold text-rose-600">Absent / Rejected</span>
+                  <div className="text-xl font-black text-rose-700 dark:text-rose-300 mt-1 tabular-nums">
+                    {empAttSummary.absentDays} / {empRejectedAttempts.length}
+                  </div>
                 </div>
                 <div className="p-3 rounded-2xl bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 text-center">
-                  <span className="text-[10px] uppercase font-bold text-blue-600">Approved Leave</span>
-                  <div className="text-xl font-black text-blue-700 dark:text-blue-300 mt-1">2</div>
+                  <span className="text-[10px] uppercase font-bold text-blue-600">Half Day / Leave</span>
+                  <div className="text-xl font-black text-blue-700 dark:text-blue-300 mt-1 tabular-nums">
+                    {empAttSummary.halfDays || 0} / {empAttSummary.leaveDays}
+                  </div>
                 </div>
                 <div className="p-3 rounded-2xl bg-purple-50 dark:bg-purple-950/30 border border-purple-200 dark:border-purple-800 text-center">
                   <span className="text-[10px] uppercase font-bold text-purple-600">Overtime Hours</span>
-                  <div className="text-xl font-black text-purple-700 dark:text-purple-300 mt-1">
+                  <div className="text-xl font-black text-purple-700 dark:text-purple-300 mt-1 tabular-nums">
                     {empOvertimes.reduce((sum, o) => sum + o.hours, 0)} hrs
                   </div>
                 </div>
               </div>
 
-              {/* Sample Log */}
+              {/* Complete Attendance Audit Trail */}
               <div className="border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden">
                 <div className="px-4 py-3 bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 font-bold text-slate-800 dark:text-white flex justify-between items-center">
-                  <span>Recent Daily Attendance Audit Trail</span>
-                  <span className="text-[11px] text-slate-500 font-normal">October 2026</span>
+                  <span>GPS Attendance Audit Trail ({empAttendance.length} Records)</span>
+                  <span className="text-[11px] text-slate-500 font-normal">Shift: {employee.shiftStartTime || '09:00'} – {employee.shiftEndTime || '18:00'}</span>
                 </div>
-                <table className="w-full text-left text-xs">
-                  <thead className="bg-slate-50/50 dark:bg-slate-800/40 text-slate-400 font-semibold border-b border-slate-100 dark:border-slate-800">
-                    <tr>
-                      <th className="p-2.5">Date</th>
-                      <th className="p-2.5">Status</th>
-                      <th className="p-2.5">Check In</th>
-                      <th className="p-2.5">Check Out</th>
-                      <th className="p-2.5">Work Hours</th>
-                      <th className="p-2.5">Remarks</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                    <tr className="hover:bg-slate-50/50 dark:hover:bg-slate-800/40">
-                      <td className="p-2.5 font-mono">2026-10-31</td>
-                      <td className="p-2.5"><span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">Present</span></td>
-                      <td className="p-2.5 font-mono">08:55 AM</td>
-                      <td className="p-2.5 font-mono">05:15 PM</td>
-                      <td className="p-2.5 font-mono">8.3 hrs</td>
-                      <td className="p-2.5 text-slate-500">Biometric punch logged</td>
-                    </tr>
-                    <tr className="hover:bg-slate-50/50 dark:hover:bg-slate-800/40">
-                      <td className="p-2.5 font-mono">2026-10-30</td>
-                      <td className="p-2.5"><span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">Present</span></td>
-                      <td className="p-2.5 font-mono">09:02 AM</td>
-                      <td className="p-2.5 font-mono">05:30 PM</td>
-                      <td className="p-2.5 font-mono">8.5 hrs</td>
-                      <td className="p-2.5 text-slate-500">Beat check-in confirmed</td>
-                    </tr>
-                    <tr className="hover:bg-slate-50/50 dark:hover:bg-slate-800/40">
-                      <td className="p-2.5 font-mono">2026-10-29</td>
-                      <td className="p-2.5"><span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300">Late</span></td>
-                      <td className="p-2.5 font-mono text-amber-600">09:25 AM</td>
-                      <td className="p-2.5 font-mono">05:30 PM</td>
-                      <td className="p-2.5 font-mono">8.1 hrs</td>
-                      <td className="p-2.5 text-slate-500">Traffic delay Gazipur Highway</td>
-                    </tr>
-                  </tbody>
-                </table>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-50/50 dark:bg-slate-800/40 text-slate-400 font-semibold border-b border-slate-100 dark:border-slate-800">
+                      <tr>
+                        <th className="p-2.5">Date</th>
+                        <th className="p-2.5">Status</th>
+                        <th className="p-2.5">Check In</th>
+                        <th className="p-2.5">Check-In Dist</th>
+                        <th className="p-2.5">Check Out</th>
+                        <th className="p-2.5">Check-Out Dist</th>
+                        <th className="p-2.5">Hours</th>
+                        <th className="p-2.5">Late Duration</th>
+                        <th className="p-2.5">GPS Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                      {empAttendance.length === 0 ? (
+                        <tr>
+                          <td colSpan={9} className="p-6 text-center text-slate-400">
+                            No attendance records logged yet for {employee.name}.
+                          </td>
+                        </tr>
+                      ) : (
+                        empAttendance.map((rec) => (
+                          <tr key={rec.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/40">
+                            <td className="p-2.5 font-mono tabular-nums">{rec.date}</td>
+                            <td className="p-2.5">
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                  rec.status === 'Present'
+                                    ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
+                                    : rec.status === 'Late'
+                                    ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
+                                    : rec.status === 'Absent'
+                                    ? 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300'
+                                    : 'bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300'
+                                }`}
+                              >
+                                {rec.status}
+                              </span>
+                            </td>
+                            <td className="p-2.5 font-mono tabular-nums">{rec.checkInTime || rec.inTime || '--'}</td>
+                            <td className="p-2.5 font-mono tabular-nums">
+                              {rec.checkInDistanceMeters !== undefined ? `${rec.checkInDistanceMeters}m` : '--'}
+                            </td>
+                            <td className="p-2.5 font-mono tabular-nums">{rec.checkOutTime || rec.outTime || '--'}</td>
+                            <td className="p-2.5 font-mono tabular-nums">
+                              {rec.checkOutDistanceMeters !== undefined ? `${rec.checkOutDistanceMeters}m` : '--'}
+                            </td>
+                            <td className="p-2.5 font-mono tabular-nums">{rec.workHours ? `${rec.workHours} hrs` : '--'}</td>
+                            <td className="p-2.5 text-slate-600 dark:text-slate-400">
+                              {formatLateDuration(rec.lateDurationMinutes ?? rec.lateMinutes ?? 0)}
+                            </td>
+                            <td className="p-2.5">
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                  rec.gpsValidationStatus === 'Accepted'
+                                    ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
+                                    : rec.gpsValidationStatus === 'Rejected'
+                                    ? 'bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300'
+                                    : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
+                                }`}
+                              >
+                                {rec.gpsValidationStatus || 'Manual'}
+                              </span>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </div>
           )}

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import {
   Smartphone,
   ShoppingBag,
@@ -53,9 +53,21 @@ import {
   FileSignature,
   Sun,
   Moon,
+  Crosshair,
+  AlertTriangle,
+  XCircle,
 } from 'lucide-react';
 import { useERP } from '../../context/ERPContext.tsx';
-import { Product, Customer, getCustomerProductPricing, TADAEntry, WarrantyTicket } from '../../types/erp.ts';
+import { Product, Customer, getCustomerProductPricing, TADAEntry, WarrantyTicket, FieldForceRep } from '../../types/erp.ts';
+import {
+  DEFAULT_ALLOWED_RADIUS_METERS,
+  DEFAULT_MAX_GPS_ACCURACY_METERS,
+  DEFAULT_OFFICE_LOCATIONS,
+  calculateHaversineDistanceMeters,
+  evaluateGeofenceAttendance,
+  formatLateDuration,
+  isValidCoordinatePair,
+} from '../../lib/geofence.ts';
 import { ChallanModal } from '../sales/ChallanModal.tsx';
 import { DeliveryOrderModal } from '../sales/DeliveryOrderModal.tsx';
 import { CustomerReceiptModal } from '../sales/CustomerReceiptModal.tsx';
@@ -99,6 +111,12 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
     addWarrantyTicket,
     warrantyTickets,
     addCRMLead,
+    officeLocations,
+    attendanceRecords,
+    submitGpsCheckIn,
+    submitGpsCheckOut,
+    applyLeave,
+    payrollSettings,
     theme,
     toggleTheme,
   } = useERP();
@@ -139,7 +157,14 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
 
   // Active Rep Profile
   const defaultRep = useMemo(() => {
+    const matchedUserRep = fieldForceReps.find(
+      (r) =>
+        (currentUser?.salesmanCode && r.code?.toLowerCase() === currentUser.salesmanCode.toLowerCase()) ||
+        (currentUser?.email && r.email?.toLowerCase() === currentUser.email.toLowerCase()) ||
+        (currentUser?.phone && r.phone === currentUser.phone)
+    );
     return (
+      matchedUserRep ||
       fieldForceReps.find((r) => r.name.includes('Abdur') || r.name.includes('Rahman')) ||
       fieldForceReps[0] || {
         id: 'ff-spo-01',
@@ -150,9 +175,16 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
         region: 'Dhaka North',
         area: 'Mirpur & Pallabi',
         territory: 'Mirpur DOHS',
+        assignedOfficeId: DEFAULT_OFFICE_LOCATIONS[0].id,
+        assignedOfficeName: DEFAULT_OFFICE_LOCATIONS[0].name,
+        officeLatitude: DEFAULT_OFFICE_LOCATIONS[0].latitude,
+        officeLongitude: DEFAULT_OFFICE_LOCATIONS[0].longitude,
+        allowedRadiusMeters: DEFAULT_ALLOWED_RADIUS_METERS,
+        officeAddress: DEFAULT_OFFICE_LOCATIONS[0].address,
+        locationStatus: 'Active' as const,
       }
     );
-  }, [fieldForceReps]);
+  }, [fieldForceReps, currentUser]);
 
   // Selected Retailer / Customer state (matches Screenshot 1 & 2)
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>(
@@ -345,13 +377,256 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
   const [warrantyNotes, setWarrantyNotes] = useState<string>('Battery not holding charge past 3 hours. Needs factory technician bench test.');
 
   // -------------------------------------------------------------
-  // ATTENDANCE STATE
+  // GPS GEOFENCING ATTENDANCE & LEAVE STATE
   // -------------------------------------------------------------
-  const [attendanceClockedIn, setAttendanceClockedIn] = useState<boolean>(true);
-  const [clockInTime, setClockInTime] = useState<string>('09:12 AM');
+  const [selectedAttendanceRepId, setSelectedAttendanceRepId] = useState<string>('');
+  const [liveNow, setLiveNow] = useState<Date>(() => new Date());
+  const [gpsStatusState, setGpsStatusState] = useState<'idle' | 'detecting' | 'ready' | 'denied' | 'error'>('idle');
+  const [capturedGpsCoords, setCapturedGpsCoords] = useState<{
+    latitude: number;
+    longitude: number;
+    accuracy: number;
+    capturedAtMs: number;
+  } | null>(null);
+  const [gpsStatusMessage, setGpsStatusMessage] = useState<string>('Initializing GPS location...');
+  const [attendanceSubmitting, setAttendanceSubmitting] = useState<boolean>(false);
+  const [attendanceResultAlert, setAttendanceResultAlert] = useState<{
+    type: 'success' | 'error' | 'warning';
+    title: string;
+    message: string;
+  } | null>(null);
   const [leaveType, setLeaveType] = useState<string>('Casual Leave');
   const [leaveDays, setLeaveDays] = useState<number>(1);
   const [leaveReason, setLeaveReason] = useState<string>('');
+
+  // Live clock tick when attendance view is open
+  useEffect(() => {
+    if (activeTab !== 'attendance') return;
+    setLiveNow(new Date());
+    const timer = setInterval(() => setLiveNow(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, [activeTab]);
+
+  // Active employee for attendance (respects selected employee or falls back to logged-in rep)
+  const attendanceEmployee: FieldForceRep = useMemo(() => {
+    if (selectedAttendanceRepId) {
+      const found = fieldForceReps.find((r) => r.id === selectedAttendanceRepId);
+      if (found) return found;
+    }
+    return defaultRep as FieldForceRep;
+  }, [selectedAttendanceRepId, fieldForceReps, defaultRep]);
+
+  // Resolve assigned office coordinates & radius for attendance employee
+  const assignedOfficeConfig = useMemo(() => {
+    const matchedOffice = attendanceEmployee.assignedOfficeId
+      ? officeLocations.find((o) => o.id === attendanceEmployee.assignedOfficeId)
+      : undefined;
+    const officeLat =
+      typeof attendanceEmployee.officeLatitude === 'number' &&
+      isValidCoordinatePair(attendanceEmployee.officeLatitude, attendanceEmployee.officeLongitude)
+        ? attendanceEmployee.officeLatitude
+        : matchedOffice?.latitude ?? DEFAULT_OFFICE_LOCATIONS[0].latitude;
+    const officeLng =
+      typeof attendanceEmployee.officeLongitude === 'number' &&
+      isValidCoordinatePair(attendanceEmployee.officeLatitude, attendanceEmployee.officeLongitude)
+        ? attendanceEmployee.officeLongitude
+        : matchedOffice?.longitude ?? DEFAULT_OFFICE_LOCATIONS[0].longitude;
+    const allowedRadius =
+      Number(attendanceEmployee.allowedRadiusMeters) > 0
+        ? Number(attendanceEmployee.allowedRadiusMeters)
+        : matchedOffice?.allowedRadiusMeters || DEFAULT_ALLOWED_RADIUS_METERS;
+    const locationStatus: 'Active' | 'Inactive' =
+      attendanceEmployee.locationStatus || matchedOffice?.status || 'Active';
+    return {
+      officeId: attendanceEmployee.assignedOfficeId || matchedOffice?.id || DEFAULT_OFFICE_LOCATIONS[0].id,
+      officeName:
+        attendanceEmployee.assignedOfficeName ||
+        matchedOffice?.name ||
+        attendanceEmployee.branchWorkplace ||
+        DEFAULT_OFFICE_LOCATIONS[0].name,
+      officeAddress: attendanceEmployee.officeAddress || matchedOffice?.address || DEFAULT_OFFICE_LOCATIONS[0].address,
+      officeLatitude: officeLat,
+      officeLongitude: officeLng,
+      allowedRadiusMeters: allowedRadius,
+      locationStatus,
+    };
+  }, [attendanceEmployee, officeLocations]);
+
+  // Today's attendance record for the active employee
+  const todayDateISO = liveNow.toISOString().slice(0, 10);
+  const todayAttendanceRecord = useMemo(() => {
+    return attendanceRecords.find(
+      (a) =>
+        (a.employeeId === attendanceEmployee.id ||
+          a.fieldForceId === attendanceEmployee.id ||
+          (attendanceEmployee.code && a.employeeCode === attendanceEmployee.code)) &&
+        a.date === todayDateISO
+    );
+  }, [attendanceRecords, attendanceEmployee, todayDateISO]);
+
+  // Real-time distance & geofence pre-evaluation
+  const liveGeofenceEval = useMemo(() => {
+    if (!capturedGpsCoords) return null;
+    return evaluateGeofenceAttendance({
+      employeeLatitude: capturedGpsCoords.latitude,
+      employeeLongitude: capturedGpsCoords.longitude,
+      gpsAccuracyMeters: capturedGpsCoords.accuracy,
+      officeLatitude: assignedOfficeConfig.officeLatitude,
+      officeLongitude: assignedOfficeConfig.officeLongitude,
+      allowedRadiusMeters: assignedOfficeConfig.allowedRadiusMeters,
+      locationStatus: assignedOfficeConfig.locationStatus,
+      maxGpsAccuracyMeters: payrollSettings.maxGpsAccuracyMeters || DEFAULT_MAX_GPS_ACCURACY_METERS,
+    });
+  }, [capturedGpsCoords, assignedOfficeConfig, payrollSettings.maxGpsAccuracyMeters]);
+
+  const requestCurrentGpsPosition = useCallback((): Promise<{
+    latitude: number;
+    longitude: number;
+    accuracy: number;
+    capturedAtMs: number;
+  }> => {
+    return new Promise((resolve, reject) => {
+      if (typeof navigator === 'undefined' || !navigator.geolocation) {
+        const msg = 'GPS geolocation is unavailable on this browser/device.';
+        setGpsStatusState('error');
+        setGpsStatusMessage(msg);
+        reject(new Error(msg));
+        return;
+      }
+      setGpsStatusState('detecting');
+      setGpsStatusMessage('Detecting high-accuracy GPS location...');
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const coords = {
+            latitude: pos.coords.latitude,
+            longitude: pos.coords.longitude,
+            accuracy: Math.round(pos.coords.accuracy || 0),
+            capturedAtMs: Date.now(),
+          };
+          setCapturedGpsCoords(coords);
+          setGpsStatusState('ready');
+          const dist = calculateHaversineDistanceMeters(
+            coords.latitude,
+            coords.longitude,
+            assignedOfficeConfig.officeLatitude,
+            assignedOfficeConfig.officeLongitude
+          );
+          setGpsStatusMessage(`GPS locked (±${coords.accuracy}m accuracy) • ${Math.round(dist)}m from office`);
+          resolve(coords);
+        },
+        (err) => {
+          if (err.code === 1) {
+            const msg = 'GPS permission denied. You must allow device Location access to mark attendance.';
+            setGpsStatusState('denied');
+            setGpsStatusMessage(msg);
+            reject(new Error(msg));
+          } else {
+            const msg =
+              err.code === 3
+                ? 'GPS signal timed out. Please move near a window or open area and tap Retry GPS.'
+                : 'GPS location is currently unavailable. Please enable device GPS/Location Services and retry.';
+            setGpsStatusState('error');
+            setGpsStatusMessage(msg);
+            reject(new Error(msg));
+          }
+        },
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+      );
+    });
+  }, [assignedOfficeConfig.officeLatitude, assignedOfficeConfig.officeLongitude]);
+
+  // Automatically request GPS when opening Mobile Attendance screen
+  useEffect(() => {
+    if (activeTab === 'attendance') {
+      requestCurrentGpsPosition().catch(() => {});
+    }
+  }, [activeTab, requestCurrentGpsPosition]);
+
+  const handleMobileGpsCheckIn = async () => {
+    setAttendanceResultAlert(null);
+    setAttendanceSubmitting(true);
+    try {
+      const gps = await requestCurrentGpsPosition();
+      const nowTime = new Date();
+      const hhmm = `${String(nowTime.getHours()).padStart(2, '0')}:${String(nowTime.getMinutes()).padStart(2, '0')}`;
+      const res = await submitGpsCheckIn({
+        employee: attendanceEmployee,
+        latitude: gps.latitude,
+        longitude: gps.longitude,
+        accuracy: gps.accuracy,
+        date: todayDateISO,
+        checkInTime: hhmm,
+      });
+      if (res.accepted) {
+        setAttendanceResultAlert({
+          type: 'success',
+          title: `Check-In Accepted (${res.record?.status || 'Present'})`,
+          message: `${res.reason} Checked in at ${res.record?.checkInTime || hhmm}.`,
+        });
+        setBannerNotice(`Check-In accepted for ${attendanceEmployee.name} (${Math.round(res.distanceMeters || 0)}m from office).`);
+      } else {
+        setAttendanceResultAlert({
+          type: res.errorCode === 'POOR_GPS_ACCURACY' ? 'warning' : 'error',
+          title: 'Check-In Rejected',
+          message:
+            res.distanceMeters !== undefined && res.errorCode === 'OUTSIDE_GEOFENCE'
+              ? `${res.reason} (Calculated distance: ${Math.round(res.distanceMeters)} Meters)`
+              : res.reason,
+        });
+      }
+    } catch (err: any) {
+      setAttendanceResultAlert({
+        type: gpsStatusState === 'denied' ? 'error' : 'warning',
+        title: gpsStatusState === 'denied' ? 'GPS Permission Denied' : 'GPS Unavailable',
+        message: err?.message || 'Unable to verify GPS location. Please retry.',
+      });
+    } finally {
+      setAttendanceSubmitting(false);
+    }
+  };
+
+  const handleMobileGpsCheckOut = async () => {
+    setAttendanceResultAlert(null);
+    setAttendanceSubmitting(true);
+    try {
+      const gps = await requestCurrentGpsPosition();
+      const nowTime = new Date();
+      const hhmm = `${String(nowTime.getHours()).padStart(2, '0')}:${String(nowTime.getMinutes()).padStart(2, '0')}`;
+      const res = await submitGpsCheckOut({
+        employee: attendanceEmployee,
+        latitude: gps.latitude,
+        longitude: gps.longitude,
+        accuracy: gps.accuracy,
+        date: todayDateISO,
+        checkOutTime: hhmm,
+      });
+      if (res.accepted) {
+        setAttendanceResultAlert({
+          type: 'success',
+          title: 'Check-Out Accepted',
+          message: `${res.reason} Total worked: ${res.record?.workHours ?? 0} hrs.`,
+        });
+        setBannerNotice(`Check-Out accepted for ${attendanceEmployee.name} at ${res.record?.checkOutTime || hhmm}.`);
+      } else {
+        setAttendanceResultAlert({
+          type: res.errorCode === 'POOR_GPS_ACCURACY' ? 'warning' : 'error',
+          title: 'Check-Out Rejected',
+          message:
+            res.distanceMeters !== undefined && res.errorCode === 'OUTSIDE_GEOFENCE'
+              ? `${res.reason} (Calculated distance: ${Math.round(res.distanceMeters)} Meters)`
+              : res.reason,
+        });
+      }
+    } catch (err: any) {
+      setAttendanceResultAlert({
+        type: gpsStatusState === 'denied' ? 'error' : 'warning',
+        title: gpsStatusState === 'denied' ? 'GPS Permission Denied' : 'GPS Unavailable',
+        message: err?.message || 'Unable to verify GPS location. Please retry.',
+      });
+    } finally {
+      setAttendanceSubmitting(false);
+    }
+  };
 
   // Cart operations
   const updateCartQty = (productId: string, delta: number) => {
@@ -2168,6 +2443,8 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
           {/* ========================================================= */}
           {/* SCREEN 8: ATTENDANCE & LEAVE APPLY                        */}
           {/* ========================================================= */}
+          {/* SCREEN: GPS GEOFENCING ATTENDANCE & LEAVE                 */}
+          {/* ========================================================= */}
           {activeTab === 'attendance' && (
             <div className="p-3.5 space-y-3">
               <div className="flex items-center justify-between pb-1">
@@ -2178,50 +2455,269 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
                   <ArrowLeft className="w-4 h-4" />
                   <span>Back</span>
                 </button>
-                <h3 className="font-bold text-sm text-white">Attendance & Leave</h3>
-                <div className="w-6"></div>
+                <h3 className="font-bold text-sm text-white">GPS Geofence Attendance</h3>
+                <button
+                  type="button"
+                  onClick={() => requestCurrentGpsPosition().catch(() => {})}
+                  className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300"
+                  title="Refresh GPS Location"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${gpsStatusState === 'detecting' ? 'animate-spin' : ''}`} />
+                </button>
               </div>
 
-              {/* Attendance Card */}
-              <div className="p-4 rounded-2xl bg-[#1e2026] border border-white/5 space-y-3 text-center">
-                <div className="w-14 h-14 rounded-full bg-emerald-500/20 text-emerald-400 mx-auto flex items-center justify-center">
-                  <UserCheck className="w-7 h-7" />
+              {/* Employee Selector (if supervisor/admin testing multiple staff) */}
+              {fieldForceReps.length > 1 && (
+                <div className="p-2.5 rounded-xl bg-[#1e2026] border border-white/10">
+                  <label className="block text-[10px] font-semibold uppercase tracking-wider text-slate-400 mb-1">
+                    Active Employee Profile
+                  </label>
+                  <select
+                    value={attendanceEmployee.id}
+                    onChange={(e) => {
+                      setSelectedAttendanceRepId(e.target.value);
+                      setAttendanceResultAlert(null);
+                    }}
+                    className="w-full p-2 rounded-lg bg-black/40 border border-white/10 text-white text-xs font-medium"
+                  >
+                    {fieldForceReps.map((rep) => (
+                      <option key={rep.id} value={rep.id}>
+                        {rep.name} ({rep.code}) — {rep.assignedOfficeName || 'Head Office'}
+                      </option>
+                    ))}
+                  </select>
                 </div>
-                <div>
-                  <div className="text-xl font-black text-white font-mono">03:30:15 PM</div>
-                  <div className="text-xs text-slate-400">Monday, October 12, 2026</div>
+              )}
+
+              {/* Employee & Assigned Office Info Card */}
+              <div className="p-3.5 rounded-2xl bg-[#1e2026] border border-white/10 space-y-2.5 text-xs">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <div className="text-sm font-bold text-white">{attendanceEmployee.name}</div>
+                    <div className="text-[11px] font-mono text-blue-400">
+                      ID: {attendanceEmployee.code} • {attendanceEmployee.department || 'Operations'}
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-base font-black text-white font-mono tabular-nums">
+                      {liveNow.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                    </div>
+                    <div className="text-[10px] text-slate-400">
+                      {liveNow.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}
+                    </div>
+                  </div>
                 </div>
 
-                <div className="p-2.5 rounded-xl bg-black/40 border border-white/5 text-[11px] text-slate-300 space-y-1">
-                  <div className="flex items-center justify-center gap-1 text-emerald-400 font-semibold">
-                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
-                    <span>Status: Clocked IN ({clockInTime})</span>
+                <div className="p-2.5 rounded-xl bg-black/40 border border-white/5 space-y-1.5">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-slate-400 flex items-center gap-1">
+                      <Building2 className="w-3.5 h-3.5 text-blue-400" />
+                      Assigned Office:
+                    </span>
+                    <span className="font-semibold text-white text-right">{assignedOfficeConfig.officeName}</span>
                   </div>
-                  <div className="text-slate-400 text-[10px]">
-                    Location: Mirpur 10 Beat Route (Lat: 23.8041, Lng: 90.3667)
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-slate-400 flex items-center gap-1">
+                      <Navigation className="w-3.5 h-3.5 text-emerald-400" />
+                      Allowed Radius:
+                    </span>
+                    <span className="font-mono font-bold text-emerald-400 tabular-nums">
+                      {assignedOfficeConfig.allowedRadiusMeters} Meters
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-slate-400 flex items-center gap-1">
+                      <Clock className="w-3.5 h-3.5 text-slate-400" />
+                      Office Coords:
+                    </span>
+                    <span className="font-mono text-[10px] text-slate-300 tabular-nums">
+                      {assignedOfficeConfig.officeLatitude.toFixed(5)}, {assignedOfficeConfig.officeLongitude.toFixed(5)}
+                    </span>
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    onClick={() => {
-                      setAttendanceClockedIn(true);
-                      setClockInTime('09:12 AM');
-                      setBannerNotice('✅ Attendance Punch IN recorded with live GPS.');
-                    }}
-                    className="p-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-md"
+                {/* Color-coded GPS Geofence Status Indicator (Green / Red / Yellow) */}
+                {(() => {
+                  const isDetecting = gpsStatusState === 'detecting' || gpsStatusState === 'idle';
+                  const isPoorAccuracyOrError =
+                    gpsStatusState === 'error' ||
+                    (liveGeofenceEval && liveGeofenceEval.errorCode === 'POOR_GPS_ACCURACY');
+                  const isGreen =
+                    gpsStatusState === 'ready' && liveGeofenceEval?.accepted === true;
+                  const isRed =
+                    gpsStatusState === 'denied' ||
+                    (gpsStatusState === 'ready' && liveGeofenceEval && !liveGeofenceEval.accepted && liveGeofenceEval.errorCode !== 'POOR_GPS_ACCURACY');
+
+                  const boxCls = isGreen
+                    ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                    : isRed
+                    ? 'bg-rose-500/15 border-rose-500/40 text-rose-300'
+                    : 'bg-amber-500/15 border-amber-500/40 text-amber-300';
+
+                  return (
+                    <div className={`p-3 rounded-xl border space-y-2 ${boxCls}`}>
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2 font-bold text-xs">
+                          {isGreen ? (
+                            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                          ) : isRed ? (
+                            <XCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                          ) : (
+                            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                          )}
+                          <span>
+                            {isGreen
+                              ? `Within Permitted ${assignedOfficeConfig.allowedRadiusMeters}m Radius`
+                              : isDetecting
+                              ? 'Detecting Device GPS Location...'
+                              : isPoorAccuracyOrError
+                              ? 'GPS Signal Weak / Unavailable'
+                              : gpsStatusState === 'denied'
+                              ? 'GPS Permission Denied'
+                              : 'Outside Permitted Attendance Area'}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => requestCurrentGpsPosition().catch(() => {})}
+                          className="px-2 py-1 rounded-lg bg-black/30 hover:bg-black/50 text-[10px] font-bold inline-flex items-center gap-1"
+                        >
+                          <Crosshair className="w-3 h-3" />
+                          <span>Retry GPS</span>
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 pt-1 border-t border-white/10 text-[11px]">
+                        <div>
+                          <span className="text-[10px] opacity-80 block">Distance from Office</span>
+                          <span className="font-mono font-black text-sm tabular-nums">
+                            {liveGeofenceEval ? `${Math.round(liveGeofenceEval.distanceMeters)} Meters` : '--'}
+                          </span>
+                        </div>
+                        <div className="text-right">
+                          <span className="text-[10px] opacity-80 block">GPS Accuracy</span>
+                          <span className="font-mono font-bold text-sm tabular-nums">
+                            {capturedGpsCoords ? `±${capturedGpsCoords.accuracy}m` : '--'}
+                          </span>
+                        </div>
+                      </div>
+
+                      {capturedGpsCoords && (
+                        <div className="text-[10px] font-mono opacity-80 tabular-nums">
+                          Captured Coords: {capturedGpsCoords.latitude.toFixed(6)}, {capturedGpsCoords.longitude.toFixed(6)}
+                        </div>
+                      )}
+
+                      {!isGreen && !isDetecting && (
+                        <p className="text-[11px] leading-snug">
+                          {liveGeofenceEval && !liveGeofenceEval.accepted
+                            ? liveGeofenceEval.reason
+                            : gpsStatusMessage}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
+
+                {/* Submission Feedback Alert */}
+                {attendanceResultAlert && (
+                  <div
+                    className={`p-3 rounded-xl border text-xs space-y-1 ${
+                      attendanceResultAlert.type === 'success'
+                        ? 'bg-emerald-600/20 border-emerald-500 text-emerald-200'
+                        : attendanceResultAlert.type === 'warning'
+                        ? 'bg-amber-600/20 border-amber-500 text-amber-200'
+                        : 'bg-rose-600/20 border-rose-500 text-rose-200'
+                    }`}
                   >
-                    Punch IN
+                    <div className="font-bold">{attendanceResultAlert.title}</div>
+                    <div className="text-[11px] leading-snug">{attendanceResultAlert.message}</div>
+                  </div>
+                )}
+
+                {/* Check In / Check Out Action Buttons */}
+                <div className="grid grid-cols-2 gap-2.5 pt-1">
+                  <button
+                    type="button"
+                    disabled={
+                      attendanceSubmitting ||
+                      gpsStatusState === 'denied' ||
+                      Boolean(todayAttendanceRecord?.checkInTime || todayAttendanceRecord?.inTime)
+                    }
+                    onClick={handleMobileGpsCheckIn}
+                    className="p-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:text-slate-400 text-white font-bold text-xs shadow-md transition-colors flex items-center justify-center gap-1.5"
+                  >
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>{attendanceSubmitting ? 'Validating...' : 'Check In'}</span>
                   </button>
                   <button
-                    onClick={() => {
-                      setAttendanceClockedIn(false);
-                      setBannerNotice('👋 Punch OUT recorded at 03:30 PM. Field work closed.');
-                    }}
-                    className="p-2.5 rounded-xl bg-rose-600/80 hover:bg-rose-600 text-white font-bold text-xs shadow-md"
+                    type="button"
+                    disabled={
+                      attendanceSubmitting ||
+                      gpsStatusState === 'denied' ||
+                      !(todayAttendanceRecord?.checkInTime || todayAttendanceRecord?.inTime) ||
+                      Boolean(todayAttendanceRecord?.checkOutTime || todayAttendanceRecord?.outTime)
+                    }
+                    onClick={handleMobileGpsCheckOut}
+                    className="p-3 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:bg-slate-700 disabled:text-slate-400 text-white font-bold text-xs shadow-md transition-colors flex items-center justify-center gap-1.5"
                   >
-                    Punch OUT
+                    <Clock className="w-4 h-4" />
+                    <span>{attendanceSubmitting ? 'Validating...' : 'Check Out'}</span>
                   </button>
+                </div>
+
+                {/* Today's Attendance Status Card */}
+                <div className="p-3 rounded-xl bg-black/40 border border-white/10 space-y-1.5 text-[11px]">
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-400 font-semibold">Today&apos;s Status ({todayDateISO})</span>
+                    <span
+                      className={`px-2 py-0.5 rounded font-bold text-[10px] ${
+                        todayAttendanceRecord?.status === 'Present'
+                          ? 'bg-emerald-500/20 text-emerald-300'
+                          : todayAttendanceRecord?.status === 'Late'
+                          ? 'bg-amber-500/20 text-amber-300'
+                          : todayAttendanceRecord?.status === 'Half Day' || todayAttendanceRecord?.status === 'Half-Day'
+                          ? 'bg-blue-500/20 text-blue-300'
+                          : 'bg-slate-700 text-slate-300'
+                      }`}
+                    >
+                      {todayAttendanceRecord ? todayAttendanceRecord.status : 'Not Marked Yet'}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-[11px] pt-1">
+                    <div>
+                      <span className="text-slate-500 block">Check-In</span>
+                      <span className="font-mono text-white font-semibold">
+                        {todayAttendanceRecord?.checkInTime || todayAttendanceRecord?.inTime || '--:--'}
+                      </span>
+                      {todayAttendanceRecord?.checkInDistanceMeters !== undefined && (
+                        <span className="text-[10px] text-emerald-400 block font-mono">
+                          {todayAttendanceRecord.checkInDistanceMeters}m from office
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-right">
+                      <span className="text-slate-500 block">Check-Out</span>
+                      <span className="font-mono text-white font-semibold">
+                        {todayAttendanceRecord?.checkOutTime || todayAttendanceRecord?.outTime || '--:--'}
+                      </span>
+                      {todayAttendanceRecord?.checkOutDistanceMeters !== undefined && (
+                        <span className="text-[10px] text-emerald-400 block font-mono">
+                          {todayAttendanceRecord.checkOutDistanceMeters}m from office
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  {todayAttendanceRecord && (todayAttendanceRecord.workHours || todayAttendanceRecord.lateDurationMinutes) ? (
+                    <div className="flex items-center justify-between pt-1 border-t border-white/5 text-[10px] text-slate-400 font-mono">
+                      <span>Worked: {todayAttendanceRecord.workHours ?? 0} hrs</span>
+                      <span>
+                        {todayAttendanceRecord.lateDurationMinutes
+                          ? formatLateDuration(todayAttendanceRecord.lateDurationMinutes)
+                          : 'On Time'}
+                      </span>
+                    </div>
+                  ) : null}
                 </div>
               </div>
 
@@ -2266,8 +2762,23 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
                 </div>
 
                 <button
+                  type="button"
                   onClick={() => {
-                    setBannerNotice(`📄 Leave Application (${leaveType} - ${leaveDays} days) submitted for Supervisor approval!`);
+                    const start = todayDateISO;
+                    const endObj = new Date(Date.now() + Math.max(0, leaveDays - 1) * 86400000);
+                    applyLeave({
+                      employeeId: attendanceEmployee.id,
+                      employeeCode: attendanceEmployee.code,
+                      employeeName: attendanceEmployee.name,
+                      department: attendanceEmployee.department || 'Sales',
+                      leaveType,
+                      startDate: start,
+                      endDate: endObj.toISOString().slice(0, 10),
+                      daysCount: leaveDays,
+                      reason: leaveReason || 'Submitted via Mobile Portal',
+                    });
+                    setLeaveReason('');
+                    setBannerNotice(`Leave Application (${leaveType} - ${leaveDays} days) submitted for approval.`);
                     setActiveTab('home');
                   }}
                   className="w-full py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs"

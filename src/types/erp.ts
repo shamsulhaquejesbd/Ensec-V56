@@ -1266,6 +1266,18 @@ export interface FieldForceRep {
     updatedBy?: string;
   }>;
   
+  // GPS Geofencing & Assigned Office Location Setup
+  assignedOfficeId?: string;
+  assignedOfficeName?: string;
+  officeLatitude?: number;
+  officeLongitude?: number;
+  allowedRadiusMeters?: number; // Default 50m
+  officeAddress?: string;
+  locationStatus?: 'Active' | 'Inactive';
+  shiftStartTime?: string; // HH:mm default '09:00'
+  shiftEndTime?: string;   // HH:mm default '18:00'
+  gracePeriodMinutes?: number; // default 15
+
   [key: string]: any;
 }
 

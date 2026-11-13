@@ -3491,3 +3491,105 @@ ALTER TABLE public.field_force_reps ADD COLUMN IF NOT EXISTS overtime_policy_his
 CREATE INDEX IF NOT EXISTS idx_field_force_ot_eligible ON public.field_force_reps(is_overtime_eligible);
 CREATE INDEX IF NOT EXISTS idx_field_force_ot_status ON public.field_force_reps(overtime_policy_status);
 
+-- ============================================================================
+-- 43. GPS GEOFENCING ATTENDANCE & MULTI-OFFICE LOCATION SETUP
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS public.office_locations (
+  id TEXT PRIMARY KEY,
+  code TEXT UNIQUE,
+  name TEXT NOT NULL,
+  address TEXT NOT NULL,
+  latitude NUMERIC(10, 7) NOT NULL,
+  longitude NUMERIC(10, 7) NOT NULL,
+  allowed_radius_meters INT NOT NULL DEFAULT 50,
+  status TEXT NOT NULL DEFAULT 'Active',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Extend existing field_force_reps (central employees) with office assignment & shift rules
+ALTER TABLE public.field_force_reps ADD COLUMN IF NOT EXISTS assigned_office_id TEXT;
+ALTER TABLE public.field_force_reps ADD COLUMN IF NOT EXISTS assigned_office_name TEXT;
+ALTER TABLE public.field_force_reps ADD COLUMN IF NOT EXISTS office_latitude NUMERIC(10, 7);
+ALTER TABLE public.field_force_reps ADD COLUMN IF NOT EXISTS office_longitude NUMERIC(10, 7);
+ALTER TABLE public.field_force_reps ADD COLUMN IF NOT EXISTS allowed_radius_meters INT DEFAULT 50;
+ALTER TABLE public.field_force_reps ADD COLUMN IF NOT EXISTS office_address TEXT;
+ALTER TABLE public.field_force_reps ADD COLUMN IF NOT EXISTS location_status TEXT DEFAULT 'Active';
+ALTER TABLE public.field_force_reps ADD COLUMN IF NOT EXISTS shift_start_time TEXT DEFAULT '09:00';
+ALTER TABLE public.field_force_reps ADD COLUMN IF NOT EXISTS shift_end_time TEXT DEFAULT '18:00';
+ALTER TABLE public.field_force_reps ADD COLUMN IF NOT EXISTS grace_period_minutes INT DEFAULT 15;
+
+-- Extend existing employee_attendances table with full GPS geofencing audit fields
+ALTER TABLE public.employee_attendances ADD COLUMN IF NOT EXISTS department TEXT;
+ALTER TABLE public.employee_attendances ADD COLUMN IF NOT EXISTS designation TEXT;
+ALTER TABLE public.employee_attendances ADD COLUMN IF NOT EXISTS assigned_office_id TEXT;
+ALTER TABLE public.employee_attendances ADD COLUMN IF NOT EXISTS assigned_office_name TEXT;
+ALTER TABLE public.employee_attendances ADD COLUMN IF NOT EXISTS office_latitude NUMERIC(10, 7);
+ALTER TABLE public.employee_attendances ADD COLUMN IF NOT EXISTS office_longitude NUMERIC(10, 7);
+ALTER TABLE public.employee_attendances ADD COLUMN IF NOT EXISTS allowed_radius_meters INT DEFAULT 50;
+ALTER TABLE public.employee_attendances ADD COLUMN IF NOT EXISTS check_in_latitude NUMERIC(10, 7);
+ALTER TABLE public.employee_attendances ADD COLUMN IF NOT EXISTS check_in_longitude NUMERIC(10, 7);
+ALTER TABLE public.employee_attendances ADD COLUMN IF NOT EXISTS check_in_distance_meters NUMERIC(10, 2);
+ALTER TABLE public.employee_attendances ADD COLUMN IF NOT EXISTS check_in_gps_accuracy_meters NUMERIC(10, 2);
+ALTER TABLE public.employee_attendances ADD COLUMN IF NOT EXISTS check_in_location_text TEXT;
+ALTER TABLE public.employee_attendances ADD COLUMN IF NOT EXISTS check_out_latitude NUMERIC(10, 7);
+ALTER TABLE public.employee_attendances ADD COLUMN IF NOT EXISTS check_out_longitude NUMERIC(10, 7);
+ALTER TABLE public.employee_attendances ADD COLUMN IF NOT EXISTS check_out_distance_meters NUMERIC(10, 2);
+ALTER TABLE public.employee_attendances ADD COLUMN IF NOT EXISTS check_out_gps_accuracy_meters NUMERIC(10, 2);
+ALTER TABLE public.employee_attendances ADD COLUMN IF NOT EXISTS check_out_location_text TEXT;
+ALTER TABLE public.employee_attendances ADD COLUMN IF NOT EXISTS work_hours NUMERIC(5, 2) DEFAULT 0.00;
+ALTER TABLE public.employee_attendances ADD COLUMN IF NOT EXISTS late_duration_minutes INT DEFAULT 0;
+ALTER TABLE public.employee_attendances ADD COLUMN IF NOT EXISTS gps_validation_status TEXT DEFAULT 'Accepted';
+ALTER TABLE public.employee_attendances ADD COLUMN IF NOT EXISTS validation_reason TEXT;
+
+-- Extend legacy attendance_logs table as well for compatibility
+ALTER TABLE public.attendance_logs ADD COLUMN IF NOT EXISTS employee_id TEXT;
+ALTER TABLE public.attendance_logs ADD COLUMN IF NOT EXISTS distance_meters NUMERIC(10, 2);
+ALTER TABLE public.attendance_logs ADD COLUMN IF NOT EXISTS gps_accuracy_meters NUMERIC(10, 2);
+ALTER TABLE public.attendance_logs ADD COLUMN IF NOT EXISTS assigned_office_name TEXT;
+ALTER TABLE public.attendance_logs ADD COLUMN IF NOT EXISTS validation_status TEXT DEFAULT 'Accepted';
+
+-- Separate audit table for rejected GPS attendance attempts
+CREATE TABLE IF NOT EXISTS public.attendance_rejected_attempts (
+  id TEXT PRIMARY KEY,
+  employee_id TEXT NOT NULL,
+  employee_code TEXT,
+  employee_name TEXT NOT NULL,
+  department TEXT,
+  designation TEXT,
+  assigned_office_id TEXT,
+  assigned_office_name TEXT,
+  office_latitude NUMERIC(10, 7),
+  office_longitude NUMERIC(10, 7),
+  allowed_radius_meters INT NOT NULL DEFAULT 50,
+  attempt_type TEXT NOT NULL, -- 'Check In' | 'Check Out'
+  attendance_date DATE NOT NULL DEFAULT CURRENT_DATE,
+  attempt_time TEXT NOT NULL,
+  latitude NUMERIC(10, 7),
+  longitude NUMERIC(10, 7),
+  distance_meters NUMERIC(10, 2),
+  gps_accuracy_meters NUMERIC(10, 2),
+  gps_validation_status TEXT NOT NULL DEFAULT 'Rejected',
+  rejection_reason TEXT NOT NULL,
+  device_info TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_office_locations_status ON public.office_locations(status);
+CREATE INDEX IF NOT EXISTS idx_emp_att_office ON public.employee_attendances(assigned_office_id);
+CREATE INDEX IF NOT EXISTS idx_emp_att_gps_status ON public.employee_attendances(gps_validation_status);
+CREATE INDEX IF NOT EXISTS idx_att_rejected_date ON public.attendance_rejected_attempts(attendance_date);
+CREATE INDEX IF NOT EXISTS idx_att_rejected_emp ON public.attendance_rejected_attempts(employee_id);
+
+ALTER TABLE public.office_locations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.attendance_rejected_attempts ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Allow public all office_locations" ON public.office_locations;
+CREATE POLICY "Allow public all office_locations" ON public.office_locations FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow public all attendance_rejected_attempts" ON public.attendance_rejected_attempts;
+CREATE POLICY "Allow public all attendance_rejected_attempts" ON public.attendance_rejected_attempts FOR ALL USING (true) WITH CHECK (true);
+
+GRANT ALL ON public.office_locations TO postgres, anon, authenticated, service_role;
+GRANT ALL ON public.attendance_rejected_attempts TO postgres, anon, authenticated, service_role;
+
