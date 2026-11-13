@@ -79,6 +79,18 @@ export function pathnameToModule(pathname: string): string {
     'finance': 'finance-cashbook',
     'cashbook': 'finance-cashbook',
     'cash-bank': 'finance-cashbook',
+    'coa': 'finance-coa',
+    'chart-of-accounts': 'finance-coa',
+    'opening-balances': 'finance-opening-balances',
+    'journal-vouchers': 'finance-journal-vouchers',
+    'general-ledger': 'finance-general-ledger',
+    'receivables': 'finance-receivables',
+    'payables': 'finance-payables',
+    'trial-balance': 'finance-trial-balance',
+    'balance-sheet': 'finance-balance-sheet',
+    'profit-loss': 'finance-profit-loss',
+    'cash-flow': 'finance-cash-flow',
+    'fiscal-years': 'finance-fiscal-years',
     'installment': 'installment',
     'collection': 'collection',
     'sms': 'sms',
@@ -406,7 +418,10 @@ function MainApp() {
               {activeModule === 'payment-aging' && <PaymentModule initialTab="aging" />}
               {activeModule === 'crm-agreements' && <CRMAgreementsPage />}
               {activeModule === 'tada' && <TADAModule />}
-              {(activeModule === 'finance-cashbook' || activeModule === 'cash-bank' || activeModule.startsWith('cash-bank')) && (
+              {(activeModule === 'finance-cashbook' ||
+                activeModule.startsWith('finance-') ||
+                activeModule === 'cash-bank' ||
+                activeModule.startsWith('cash-bank')) && (
                 <FinanceCashBookModule initialSubTab={activeModule} onNavigate={(mod) => navigateTo(mod)} />
               )}
               {activeModule.startsWith('installment') && (

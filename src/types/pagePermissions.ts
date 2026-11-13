@@ -599,16 +599,115 @@ export const ERP_PAGE_PERMISSIONS_REGISTRY: ERPModuleCategory[] = [
         id: 'finance-cashbook',
         name: 'Cash & Bank Management',
         category: 'Accounts & Finance',
-        description: 'Cashbooks, bank books, multi-account ledgers, debit/credit vouchers, and bank reconciliation.',
+        description: 'Complete Double-Entry Accounting, Chart of Accounts, Cashbooks, Bank Books, Journal Vouchers, GL, AR/AP, and Financial Statements.',
         actions: [
-          { key: 'view', label: 'View Cash & Bank', description: 'Can see cashbooks, bank ledgers, and statement transactions' },
-          { key: 'create_voucher', label: 'Create Transaction Voucher', description: 'Can post cash/bank receipt or payment vouchers' },
-          { key: 'edit_voucher', label: 'Edit Voucher', description: 'Can modify draft vouchers prior to posting' },
-          { key: 'approve_voucher', label: 'Approve Voucher', description: 'Can verify and approve financial transactions', isApprovalAction: true },
-          { key: 'post_voucher', label: 'Post to General Ledger', description: 'Can commit approved transactions to General Ledger' },
-          { key: 'view_bankbook', label: 'View Bankbook', description: 'Can view detailed commercial bank statements and balances' },
-          { key: 'reconcile', label: 'Bank Reconciliation', description: 'Can reconcile bank accounts against monthly bank statements' },
-          { key: 'export', label: 'Export Ledgers', description: 'Can export cashbook and ledger balance reports' },
+          { key: 'view', label: 'View Accounting & Cash/Bank', description: 'Can see dashboard, cashbooks, bank ledgers, GL, and financial reports' },
+          { key: 'create_voucher', label: 'Create Journal & Cash Vouchers', description: 'Can create draft journal, receipt, payment, contra, and opening entries' },
+          { key: 'edit_voucher', label: 'Edit Draft Vouchers', description: 'Can modify draft or unposted vouchers and COA metadata' },
+          { key: 'approve_voucher', label: 'Approve Vouchers & Opening Balances', description: 'Can verify and approve financial vouchers and opening balances', isApprovalAction: true },
+          { key: 'post_voucher', label: 'Post to General Ledger', description: 'Can commit balanced vouchers to General Ledger and lock/close fiscal periods' },
+          { key: 'reverse_voucher', label: 'Reverse Posted Vouchers', description: 'Can execute audited reversal entries for posted vouchers', isDestructive: true },
+          { key: 'view_bankbook', label: 'View Bankbook & Balances', description: 'Can view detailed commercial bank statements and balances' },
+          { key: 'reconcile', label: 'Bank Reconciliation & COA Setup', description: 'Can reconcile banks, manage Chart of Accounts, and configure Financial Years' },
+          { key: 'export', label: 'Export Ledgers & Statements', description: 'Can export Trial Balance, Balance Sheet, P&L, Cash Flow, and GL CSV/PDF reports' },
+        ],
+      },
+      {
+        id: 'finance-accounting-dashboard',
+        name: 'Accounting Executive Dashboard',
+        category: 'Accounts & Finance',
+        description: 'Assets, Liabilities, Equity, Cash/Bank trends, and Monthly P&L KPIs.',
+        actions: [
+          { key: 'view', label: 'View Accounting Dashboard', description: 'Can access double-entry accounting executive overview' },
+          { key: 'export', label: 'Export Summary', description: 'Can export dashboard KPIs' },
+        ],
+      },
+      {
+        id: 'finance-coa',
+        name: 'Chart of Accounts (COA)',
+        category: 'Accounts & Finance',
+        description: 'Hierarchical Assets, Liabilities, Equity, Revenue, and Expense heads.',
+        actions: [
+          { key: 'view', label: 'View Chart of Accounts', description: 'Can inspect COA tree hierarchy and account balances' },
+          { key: 'create', label: 'Create Account Head', description: 'Can create parent and multi-level child accounting heads' },
+          { key: 'edit', label: 'Edit / Deactivate Account', description: 'Can rename accounts and activate/deactivate heads' },
+        ],
+      },
+      {
+        id: 'finance-opening-balances',
+        name: 'Account Opening Balances',
+        category: 'Accounts & Finance',
+        description: 'Balanced opening journal entries for Cash, Bank, AR, AP, Inventory, Fixed Assets, and Capital.',
+        actions: [
+          { key: 'view', label: 'View Opening Balances', description: 'Can view posted opening balance batches' },
+          { key: 'create', label: 'Post Opening Balance', description: 'Can submit balanced opening debit/credit journal entries' },
+        ],
+      },
+      {
+        id: 'finance-journal-vouchers',
+        name: 'Journal Voucher Management',
+        category: 'Accounts & Finance',
+        description: 'General, Payment, Receipt, Contra, and Adjustment vouchers with approval and reversal.',
+        actions: [
+          { key: 'view', label: 'View Journal Vouchers', description: 'Can inspect all draft, approved, posted, and reversed vouchers' },
+          { key: 'create', label: 'Create Voucher', description: 'Can prepare multi-line double-entry vouchers' },
+          { key: 'edit', label: 'Edit Draft Voucher', description: 'Can edit unposted draft vouchers' },
+          { key: 'approve', label: 'Approve Voucher', description: 'Can approve pending journal vouchers', isApprovalAction: true },
+          { key: 'post', label: 'Post Voucher to GL', description: 'Can permanently post vouchers to General Ledger' },
+          { key: 'reverse', label: 'Reverse Posted Voucher', description: 'Can create mirrored reversal vouchers', isDestructive: true },
+          { key: 'export', label: 'Export Vouchers', description: 'Can print and export vouchers' },
+        ],
+      },
+      {
+        id: 'finance-general-ledger',
+        name: 'General Ledger (GL)',
+        category: 'Accounts & Finance',
+        description: 'Per-account ledger with opening, running balance, closing balance, and source drill-down.',
+        actions: [
+          { key: 'view', label: 'View General Ledger', description: 'Can inspect account-wise GL transactions and running balances' },
+          { key: 'export', label: 'Export General Ledger', description: 'Can export GL statements to CSV/Print' },
+        ],
+      },
+      {
+        id: 'finance-receivables',
+        name: 'Accounts Receivable Sub-Ledger',
+        category: 'Accounts & Finance',
+        description: 'Customer and Distributor receivable balances, aging, and collection posting.',
+        actions: [
+          { key: 'view', label: 'View Receivables', description: 'Can view customer invoice dues and GL reconciliation' },
+          { key: 'create', label: 'Record Collection Receipt', description: 'Can receive customer payments and post Receipt Vouchers' },
+          { key: 'export', label: 'Export AR Ledger', description: 'Can export receivables report' },
+        ],
+      },
+      {
+        id: 'finance-payables',
+        name: 'Accounts Payable Sub-Ledger',
+        category: 'Accounts & Finance',
+        description: 'Supplier GRN payables, Optimum JV clearing ledger, and supplier payment posting.',
+        actions: [
+          { key: 'view', label: 'View Payables', description: 'Can view supplier and Optimum JV payable balances' },
+          { key: 'create', label: 'Record Supplier Payment', description: 'Can disburse payments and post Payment Vouchers' },
+          { key: 'export', label: 'Export AP Ledger', description: 'Can export payables report' },
+        ],
+      },
+      {
+        id: 'finance-financial-statements',
+        name: 'Financial Statements (TB / BS / P&L / CF)',
+        category: 'Accounts & Finance',
+        description: 'Trial Balance, Balance Sheet, Profit & Loss, and Indirect Cash Flow Statement.',
+        actions: [
+          { key: 'view', label: 'View Financial Statements', description: 'Can generate Balance Sheet, P&L, Trial Balance, and Cash Flow reports' },
+          { key: 'export', label: 'Export Financial Statements', description: 'Can print and export statutory financial statements' },
+        ],
+      },
+      {
+        id: 'finance-fiscal-years',
+        name: 'Financial Year & Period Locking',
+        category: 'Accounts & Finance',
+        description: 'Fiscal year creation, monthly period close/reopen, and Year-End Closing transfers.',
+        actions: [
+          { key: 'view', label: 'View Fiscal Years', description: 'Can inspect fiscal periods and lock status' },
+          { key: 'manage', label: 'Manage Periods & Year-End Close', description: 'Can lock/reopen periods and run Year-End Closing transfers', isApprovalAction: true },
         ],
       },
       {
@@ -782,6 +881,15 @@ export const PERMISSION_TEMPLATES: PermissionTemplate[] = [
         const isFin = [
           'dashboard',
           'finance-cashbook',
+          'finance-accounting-dashboard',
+          'finance-coa',
+          'finance-opening-balances',
+          'finance-journal-vouchers',
+          'finance-general-ledger',
+          'finance-receivables',
+          'finance-payables',
+          'finance-financial-statements',
+          'finance-fiscal-years',
           'installment',
           'collection',
           'sms',
@@ -1050,6 +1158,19 @@ export function hasPageAction(
       }
       return false;
     }
+    // Inherit finance-* sub-pages gracefully from parent finance-cashbook if sub-page entry isn't explicitly set
+    if (canonicalPageId.startsWith('finance-') && canonicalPageId !== 'finance-cashbook' && pagePerms['finance-cashbook']) {
+      const parentFin = pagePerms['finance-cashbook'];
+      if (actionKey === 'view' && parentFin.view) return true;
+      if (actionKey === 'export' && parentFin.export) return true;
+      if ((actionKey === 'create' || actionKey === 'create_voucher') && parentFin.create_voucher) return true;
+      if ((actionKey === 'edit' || actionKey === 'edit_voucher') && parentFin.edit_voucher) return true;
+      if ((actionKey === 'approve' || actionKey === 'approve_voucher') && parentFin.approve_voucher) return true;
+      if ((actionKey === 'post' || actionKey === 'post_voucher') && parentFin.post_voucher) return true;
+      if ((actionKey === 'reverse' || actionKey === 'reverse_voucher') && (parentFin.reverse_voucher || parentFin.post_voucher)) return true;
+      if (actionKey === 'manage' && (parentFin.reconcile || parentFin.post_voucher)) return true;
+    }
+
     // If checking 'view' for a parent group module, check if any child page has view=true
     if (actionKey === 'view') {
       if (pageId === 'basic-data' && Object.keys(pagePerms).some((k) => k.startsWith('basic-data-') && pagePerms[k]?.view)) return true;
@@ -1058,6 +1179,7 @@ export function hasPageAction(
       if (pageId === 'collection' && Object.keys(pagePerms).some((k) => k.startsWith('collection-') && pagePerms[k]?.view)) return true;
       if (pageId === 'sms' && Object.keys(pagePerms).some((k) => k.startsWith('sms-') && pagePerms[k]?.view)) return true;
       if (pageId === 'warranty' && Object.keys(pagePerms).some((k) => k.startsWith('warranty-') && pagePerms[k]?.view)) return true;
+      if (pageId === 'finance-cashbook' && Object.keys(pagePerms).some((k) => k.startsWith('finance-') && pagePerms[k]?.view)) return true;
     }
   }
 
@@ -1067,6 +1189,7 @@ export function hasPageAction(
     // If exact page ID or parent module prefix is in allowedModules
     const hasMod =
       allowed.includes(pageId) ||
+      (pageId.startsWith('finance-') && allowed.includes('finance-cashbook')) ||
       (pageId.startsWith('basic-data-') && allowed.includes('basic-data')) ||
       (pageId.startsWith('stock-') && allowed.includes('stock')) ||
       (pageId.startsWith('installment-') && allowed.includes('installment')) ||
@@ -1078,7 +1201,8 @@ export function hasPageAction(
       (pageId === 'installment' && allowed.some((p: string) => p.startsWith('installment-'))) ||
       (pageId === 'collection' && allowed.some((p: string) => p.startsWith('collection-'))) ||
       (pageId === 'sms' && allowed.some((p: string) => p.startsWith('sms-'))) ||
-      (pageId === 'warranty' && allowed.some((p: string) => p.startsWith('warranty-')));
+      (pageId === 'warranty' && allowed.some((p: string) => p.startsWith('warranty-'))) ||
+      (pageId === 'finance-cashbook' && allowed.some((p: string) => p.startsWith('finance-')));
 
     return hasMod;
   }

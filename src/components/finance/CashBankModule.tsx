@@ -7,7 +7,7 @@
  * Automatic Sales Posting, Service Income, and Expense Management.
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   DollarSign,
   Landmark,
@@ -43,6 +43,11 @@ import {
   Upload,
   X,
   Save,
+  LayoutDashboard,
+  BookOpen,
+  Scale,
+  BarChart3,
+  Activity,
 } from 'lucide-react';
 import { useCashBank } from '../../context/CashBankContext.tsx';
 import { useERP } from '../../context/ERPContext.tsx';
@@ -51,14 +56,42 @@ import { TransactionEntryModal } from './TransactionEntryModal.tsx';
 import { TransactionDetailModal } from './TransactionDetailModal.tsx';
 import { ReversalModal } from './ReversalModal.tsx';
 import { NewBankAccountModal } from './NewBankAccountModal.tsx';
+import { AccountingDashboardTab } from './AccountingDashboardTab.tsx';
+import { ChartOfAccountsTab } from './ChartOfAccountsTab.tsx';
+import { OpeningBalancesTab } from './OpeningBalancesTab.tsx';
+import { JournalVouchersTab } from './JournalVouchersTab.tsx';
+import { GeneralLedgerTab } from './GeneralLedgerTab.tsx';
+import { AccountsReceivablePayableTab } from './AccountsReceivablePayableTab.tsx';
+import { FinancialStatementsTab } from './FinancialStatementsTab.tsx';
+import { FinancialYearTab } from './FinancialYearTab.tsx';
+
+export type CashBankModuleTab =
+  | 'accounting-dashboard'
+  | 'coa'
+  | 'opening-balance'
+  | 'journal-vouchers'
+  | 'general-ledger'
+  | 'dashboard'
+  | 'unified-ledger'
+  | 'cash-book'
+  | 'bank-book'
+  | 'receivables'
+  | 'payables'
+  | 'trial-balance'
+  | 'balance-sheet'
+  | 'profit-loss'
+  | 'cash-flow'
+  | 'financial-years'
+  | 'sales-invoices'
+  | 'categories';
 
 interface CashBankModuleProps {
-  initialTab?: 'dashboard' | 'unified-ledger' | 'cash-book' | 'bank-book' | 'opening-balance' | 'sales-invoices' | 'categories';
+  initialTab?: CashBankModuleTab;
   onNavigate?: (module: string) => void;
 }
 
 export const CashBankModule: React.FC<CashBankModuleProps> = ({
-  initialTab = 'dashboard',
+  initialTab = 'accounting-dashboard',
   onNavigate,
 }) => {
   const {
@@ -71,6 +104,7 @@ export const CashBankModule: React.FC<CashBankModuleProps> = ({
     recordOpeningBalance,
     reverseTransaction,
     syncPendingSalesOrders,
+    syncERPEventsNow,
     addNewBankAccount,
     addExpenseCategory,
     addServiceCategory,
@@ -80,7 +114,14 @@ export const CashBankModule: React.FC<CashBankModuleProps> = ({
   const { salesOrders } = useERP();
 
   // Active Tab
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'unified-ledger' | 'cash-book' | 'bank-book' | 'opening-balance' | 'sales-invoices' | 'categories'>(initialTab);
+  const [activeTab, setActiveTab] = useState<CashBankModuleTab>(initialTab);
+  const [glFocusAccountId, setGlFocusAccountId] = useState<string | undefined>(undefined);
+
+  useEffect(() => {
+    if (initialTab) {
+      setActiveTab(initialTab);
+    }
+  }, [initialTab]);
 
   // Modals state
   const [showEntryModal, setShowEntryModal] = useState(false);
@@ -123,6 +164,17 @@ export const CashBankModule: React.FC<CashBankModuleProps> = ({
   // Sync Invoices Action
   const handleSyncInvoices = () => {
     const res = syncPendingSalesOrders();
+    const glSync = syncERPEventsNow();
+    setBannerFeedback({
+      type: res.syncedCount > 0 || glSync.syncedCount > 0 ? 'success' : 'info',
+      message: `${res.message} ${glSync.message}`,
+    });
+    setTimeout(() => setBannerFeedback(null), 6000);
+  };
+
+  // Sync All ERP Modules to General Ledger
+  const handleSyncERPToGL = () => {
+    const res = syncERPEventsNow();
     setBannerFeedback({
       type: res.syncedCount > 0 ? 'success' : 'info',
       message: res.message,
@@ -331,6 +383,14 @@ export const CashBankModule: React.FC<CashBankModuleProps> = ({
             <span>Bank to Cash</span>
           </button>
           <button
+            onClick={handleSyncERPToGL}
+            className="px-3 py-2 rounded-xl border border-teal-300 dark:border-teal-700 bg-teal-50/70 dark:bg-teal-950/30 hover:bg-teal-100 dark:hover:bg-teal-950/60 text-teal-800 dark:text-teal-300 font-semibold text-xs flex items-center gap-1.5 transition cursor-pointer"
+            title="Synchronize Sales, Procurement, Production, Payroll & Optimum JV into Double-Entry GL"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Sync ERP to GL</span>
+          </button>
+          <button
             onClick={handleSyncInvoices}
             className="px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 font-semibold text-xs flex items-center gap-1.5 transition cursor-pointer"
             title="Auto-post pending paid sales invoices to Cash & Bank ledgers"
@@ -341,35 +401,103 @@ export const CashBankModule: React.FC<CashBankModuleProps> = ({
         </div>
       </div>
 
-      {/* Module Navigation Tabs */}
-      <div className="flex items-center gap-1.5 border-b border-slate-200 dark:border-slate-800 overflow-x-auto no-scrollbar pb-1 text-xs font-semibold">
-        {[
-          { id: 'dashboard' as const, label: 'Financial Dashboard', icon: Wallet },
-          { id: 'unified-ledger' as const, label: 'Unified Ledger', icon: Layers },
-          { id: 'cash-book' as const, label: 'Cash Book', icon: DollarSign },
-          { id: 'bank-book' as const, label: 'Bank Book', icon: Landmark },
-          { id: 'opening-balance' as const, label: 'Opening Balances', icon: ShieldCheck },
-          { id: 'sales-invoices' as const, label: 'Sales Invoices & Collections', icon: Receipt },
-          { id: 'categories' as const, label: 'Categories Hub', icon: Tag },
-        ].map((tab) => {
-          const Icon = tab.icon;
-          const isActive = activeTab === tab.id;
-          return (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap ${
-                isActive
-                  ? 'bg-blue-600 text-white shadow-xs font-bold'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800'
-              }`}
-            >
-              <Icon className="w-4 h-4" />
-              <span>{tab.label}</span>
-            </button>
-          );
-        })}
+      {/* Module Navigation Tabs (Organized into Double-Entry Accounting & Cash/Bank Ledgers) */}
+      <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-2 space-y-1.5">
+        <div className="flex items-center gap-1 overflow-x-auto no-scrollbar text-xs font-semibold">
+          {[
+            { id: 'accounting-dashboard' as const, label: 'Accounting Dashboard', icon: LayoutDashboard },
+            { id: 'coa' as const, label: 'Chart of Accounts', icon: FolderTree },
+            { id: 'opening-balance' as const, label: 'Opening Balances', icon: ShieldCheck },
+            { id: 'journal-vouchers' as const, label: 'Journal Vouchers', icon: FileText },
+            { id: 'general-ledger' as const, label: 'General Ledger', icon: BookOpen },
+            { id: 'receivables' as const, label: 'Accounts Receivable', icon: ArrowDownLeft },
+            { id: 'payables' as const, label: 'Accounts Payable', icon: ArrowUpRight },
+            { id: 'financial-years' as const, label: 'Fiscal Years & Periods', icon: Calendar },
+          ].map((tab) => {
+            const Icon = tab.icon;
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap ${
+                  isActive
+                    ? 'bg-teal-600 text-white shadow-xs font-bold'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800'
+                }`}
+              >
+                <Icon className="w-3.5 h-3.5" />
+                <span>{tab.label}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="flex items-center gap-1 overflow-x-auto no-scrollbar pt-1 border-t border-slate-100 dark:border-slate-800/80 text-xs font-semibold">
+          {[
+            { id: 'trial-balance' as const, label: 'Trial Balance', icon: Scale },
+            { id: 'balance-sheet' as const, label: 'Balance Sheet', icon: BarChart3 },
+            { id: 'profit-loss' as const, label: 'Profit & Loss', icon: TrendingUp },
+            { id: 'cash-flow' as const, label: 'Cash Flow', icon: Activity },
+            { id: 'dashboard' as const, label: 'Cash & Bank Hub', icon: Wallet },
+            { id: 'cash-book' as const, label: 'Cash Book', icon: DollarSign },
+            { id: 'bank-book' as const, label: 'Bank Book', icon: Landmark },
+            { id: 'unified-ledger' as const, label: 'Unified Cash/Bank', icon: Layers },
+            { id: 'sales-invoices' as const, label: 'Sales Invoices', icon: Receipt },
+            { id: 'categories' as const, label: 'Categories', icon: Tag },
+          ].map((tab) => {
+            const Icon = tab.icon;
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap ${
+                  isActive
+                    ? 'bg-blue-600 text-white shadow-xs font-bold'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800'
+                }`}
+              >
+                <Icon className="w-3.5 h-3.5" />
+                <span>{tab.label}</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
+
+      {/* ========================================================================= */}
+      {/* DOUBLE-ENTRY ACCOUNTING TABS */}
+      {/* ========================================================================= */}
+      {activeTab === 'accounting-dashboard' && (
+        <AccountingDashboardTab
+          onSelectTab={(tab) => setActiveTab(tab as CashBankModuleTab)}
+          onSyncERP={handleSyncERPToGL}
+        />
+      )}
+
+      {activeTab === 'coa' && (
+        <ChartOfAccountsTab
+          onViewLedger={(accountId) => {
+            setGlFocusAccountId(accountId);
+            setActiveTab('general-ledger');
+          }}
+        />
+      )}
+
+      {activeTab === 'journal-vouchers' && <JournalVouchersTab />}
+
+      {activeTab === 'general-ledger' && <GeneralLedgerTab initialAccountId={glFocusAccountId} />}
+
+      {activeTab === 'receivables' && <AccountsReceivablePayableTab mode="receivables" />}
+
+      {activeTab === 'payables' && <AccountsReceivablePayableTab mode="payables" />}
+
+      {(activeTab === 'trial-balance' ||
+        activeTab === 'balance-sheet' ||
+        activeTab === 'profit-loss' ||
+        activeTab === 'cash-flow') && <FinancialStatementsTab statement={activeTab} />}
+
+      {activeTab === 'financial-years' && <FinancialYearTab />}
 
       {/* ========================================================================= */}
       {/* 1. FINANCIAL DASHBOARD TAB */}
@@ -1131,19 +1259,31 @@ export const CashBankModule: React.FC<CashBankModuleProps> = ({
       )}
 
       {/* ========================================================================= */}
-      {/* 5. OPENING BALANCE MANAGEMENT TAB */}
+      {/* 5. OPENING BALANCE MANAGEMENT TAB (Double-Entry + Quick Cash/Bank) */}
       {/* ========================================================================= */}
       {activeTab === 'opening-balance' && (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Form */}
-          <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs space-y-4">
+        <div className="space-y-8">
+          <OpeningBalancesTab />
+
+          <div className="pt-4 border-t border-slate-200 dark:border-slate-800 space-y-3">
             <div>
-              <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                <ShieldCheck className="w-4 h-4 text-purple-600" />
-                <span>Configure Opening Balance</span>
+              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                Cash & Commercial Bank Quick Opening Register
               </h3>
-              <p className="text-xs text-slate-500">Authorized opening balances reflect across all ledgers</p>
+              <p className="text-[11px] text-slate-400">
+                Quick single-vault Cash/Bank opening adjustment (automatically posts balanced Opening Journal entry against Owner's Capital / Retained Earnings)
+              </p>
             </div>
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              {/* Form */}
+              <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs space-y-4">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                    <ShieldCheck className="w-4 h-4 text-purple-600" />
+                    <span>Quick Cash / Bank Opening</span>
+                  </h3>
+                  <p className="text-xs text-slate-500">Authorized opening balances reflect across all ledgers</p>
+                </div>
 
             <form onSubmit={handleSaveOpeningBalance} className="space-y-3.5 text-xs">
               <div>
@@ -1267,6 +1407,8 @@ export const CashBankModule: React.FC<CashBankModuleProps> = ({
                   ))}
                 </tbody>
               </table>
+            </div>
+          </div>
             </div>
           </div>
         </div>

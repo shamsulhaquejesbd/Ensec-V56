@@ -73,6 +73,7 @@ import {
   Bell,
   ArrowRightLeft,
   Settings2,
+  TrendingUp,
 } from 'lucide-react';
 import { useERP } from '../../context/ERPContext.tsx';
 import { ThemeToggle } from './ThemeToggle.tsx';
@@ -303,6 +304,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
           id: 'finance-cashbook',
           label: 'Cash & Bank Management',
           icon: DollarSign,
+          isDropdown: true,
+          children: [
+            { id: 'finance-accounting-dashboard', label: 'Accounting Dashboard', icon: LayoutDashboard },
+            { id: 'finance-coa', label: 'Chart of Accounts', icon: FolderTree },
+            { id: 'finance-opening-balances', label: 'Opening Balances', icon: ShieldCheck },
+            { id: 'finance-journal-vouchers', label: 'Journal Vouchers', icon: FileText },
+            { id: 'finance-general-ledger', label: 'General Ledger', icon: BookOpen },
+            { id: 'finance-cash-book', label: 'Cash Book', icon: DollarSign },
+            { id: 'finance-bank-book', label: 'Bank Book', icon: Landmark },
+            { id: 'finance-receivables', label: 'Accounts Receivable', icon: Receipt },
+            { id: 'finance-payables', label: 'Accounts Payable', icon: CreditCard },
+            { id: 'finance-trial-balance', label: 'Trial Balance', icon: Calculator },
+            { id: 'finance-balance-sheet', label: 'Balance Sheet', icon: BarChart3 },
+            { id: 'finance-profit-loss', label: 'Profit & Loss', icon: TrendingUp },
+            { id: 'finance-cash-flow', label: 'Cash Flow Statement', icon: ArrowRightLeft },
+            { id: 'finance-fiscal-years', label: 'Financial Years & Periods', icon: Calendar },
+          ],
         },
         {
           id: 'installment',

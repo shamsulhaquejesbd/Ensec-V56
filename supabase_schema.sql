@@ -3601,3 +3601,225 @@ ALTER TABLE public.employee_overtimes ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Allow public all employee_overtimes" ON public.employee_overtimes;
 CREATE POLICY "Allow public all employee_overtimes" ON public.employee_overtimes FOR ALL USING (true) WITH CHECK (true);
 GRANT ALL ON public.employee_overtimes TO postgres, anon, authenticated, service_role;
+
+-- ============================================================================
+-- 45. DOUBLE-ENTRY ACCOUNTING & FINANCIAL STATEMENTS ENGINE
+-- Safe additive migration: creates COA, Financial Years, Accounting Periods,
+-- Journal Vouchers, General Ledger Entries, Opening Balances, Accounting Settings,
+-- and Audit Logs without altering or dropping any existing ERP data.
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS public.chart_of_accounts (
+  id TEXT PRIMARY KEY,
+  code TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  category TEXT NOT NULL CHECK (category IN ('Asset', 'Liability', 'Equity', 'Revenue', 'Expense')),
+  classification TEXT NOT NULL,
+  parent_id TEXT REFERENCES public.chart_of_accounts(id) ON DELETE RESTRICT,
+  level INT NOT NULL DEFAULT 1,
+  is_group BOOLEAN NOT NULL DEFAULT FALSE,
+  is_system BOOLEAN NOT NULL DEFAULT FALSE,
+  is_contra BOOLEAN NOT NULL DEFAULT FALSE,
+  normal_balance TEXT NOT NULL CHECK (normal_balance IN ('Debit', 'Credit')),
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  linked_cash_bank_account_id TEXT,
+  description TEXT,
+  created_by TEXT DEFAULT 'System',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.financial_years (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  start_date DATE NOT NULL,
+  end_date DATE NOT NULL,
+  is_active BOOLEAN NOT NULL DEFAULT FALSE,
+  status TEXT NOT NULL DEFAULT 'Open' CHECK (status IN ('Open', 'Closed')),
+  closed_at TIMESTAMPTZ,
+  closed_by TEXT,
+  closing_voucher_id TEXT,
+  retained_earnings_transferred_bdt NUMERIC(16, 2) DEFAULT 0.00,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.accounting_periods (
+  id TEXT PRIMARY KEY,
+  financial_year_id TEXT NOT NULL REFERENCES public.financial_years(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  period_number INT NOT NULL,
+  start_date DATE NOT NULL,
+  end_date DATE NOT NULL,
+  status TEXT NOT NULL DEFAULT 'Open' CHECK (status IN ('Open', 'Closed', 'Locked')),
+  closed_by TEXT,
+  closed_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS public.accounting_vouchers (
+  id TEXT PRIMARY KEY,
+  voucher_no TEXT NOT NULL UNIQUE,
+  voucher_type TEXT NOT NULL,
+  voucher_date DATE NOT NULL,
+  financial_year_id TEXT,
+  period_id TEXT,
+  reference_no TEXT,
+  description TEXT NOT NULL,
+  total_debit NUMERIC(16, 2) NOT NULL DEFAULT 0.00,
+  total_credit NUMERIC(16, 2) NOT NULL DEFAULT 0.00,
+  status TEXT NOT NULL DEFAULT 'Draft' CHECK (status IN ('Draft', 'Pending Approval', 'Approved', 'Posted', 'Reversed')),
+  source_module TEXT,
+  source_id TEXT,
+  party_type TEXT,
+  party_id TEXT,
+  party_name TEXT,
+  attachment_url TEXT,
+  attachment_name TEXT,
+  prepared_by TEXT NOT NULL,
+  prepared_at TIMESTAMPTZ DEFAULT NOW(),
+  approved_by TEXT,
+  approved_at TIMESTAMPTZ,
+  posted_by TEXT,
+  posted_at TIMESTAMPTZ,
+  reversed_by TEXT,
+  reversed_at TIMESTAMPTZ,
+  reversal_reason TEXT,
+  reversal_of_voucher_id TEXT,
+  reversed_by_voucher_id TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.accounting_voucher_lines (
+  id TEXT PRIMARY KEY,
+  voucher_id TEXT NOT NULL REFERENCES public.accounting_vouchers(id) ON DELETE CASCADE,
+  line_no INT NOT NULL,
+  account_id TEXT NOT NULL REFERENCES public.chart_of_accounts(id) ON DELETE RESTRICT,
+  account_code TEXT NOT NULL,
+  account_name TEXT NOT NULL,
+  description TEXT,
+  debit NUMERIC(16, 2) NOT NULL DEFAULT 0.00,
+  credit NUMERIC(16, 2) NOT NULL DEFAULT 0.00,
+  party_type TEXT,
+  party_id TEXT,
+  party_name TEXT,
+  cost_center TEXT
+);
+
+CREATE TABLE IF NOT EXISTS public.general_ledger_entries (
+  id TEXT PRIMARY KEY,
+  voucher_id TEXT NOT NULL REFERENCES public.accounting_vouchers(id) ON DELETE CASCADE,
+  voucher_no TEXT NOT NULL,
+  voucher_type TEXT NOT NULL,
+  entry_date DATE NOT NULL,
+  financial_year_id TEXT,
+  period_id TEXT,
+  account_id TEXT NOT NULL REFERENCES public.chart_of_accounts(id) ON DELETE RESTRICT,
+  account_code TEXT NOT NULL,
+  account_name TEXT NOT NULL,
+  account_category TEXT NOT NULL,
+  description TEXT NOT NULL,
+  reference_no TEXT,
+  debit NUMERIC(16, 2) NOT NULL DEFAULT 0.00,
+  credit NUMERIC(16, 2) NOT NULL DEFAULT 0.00,
+  source_module TEXT,
+  source_id TEXT,
+  party_name TEXT,
+  created_by TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.account_opening_balances (
+  id TEXT PRIMARY KEY,
+  financial_year_id TEXT NOT NULL,
+  effective_date DATE NOT NULL,
+  reference_no TEXT,
+  description TEXT NOT NULL,
+  voucher_id TEXT,
+  total_debit NUMERIC(16, 2) NOT NULL DEFAULT 0.00,
+  total_credit NUMERIC(16, 2) NOT NULL DEFAULT 0.00,
+  lines_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+  posted_by TEXT NOT NULL,
+  posted_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.accounting_settings (
+  id TEXT PRIMARY KEY DEFAULT 'default',
+  company_legal_name TEXT NOT NULL DEFAULT 'Ensec Lithium Battery BD Ltd.',
+  base_currency TEXT NOT NULL DEFAULT 'BDT',
+  allow_negative_cash_bank BOOLEAN NOT NULL DEFAULT FALSE,
+  auto_sync_erp_transactions BOOLEAN NOT NULL DEFAULT TRUE,
+  require_voucher_approval BOOLEAN NOT NULL DEFAULT FALSE,
+  enforce_period_locking BOOLEAN NOT NULL DEFAULT TRUE,
+  default_vat_rate NUMERIC(6, 2) NOT NULL DEFAULT 0.00,
+  updated_by TEXT,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.account_audit_logs (
+  id TEXT PRIMARY KEY,
+  action TEXT NOT NULL,
+  entity_type TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  voucher_no TEXT,
+  details TEXT NOT NULL,
+  performed_by TEXT NOT NULL,
+  performed_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_acc_voucher_source_unique
+  ON public.accounting_vouchers(source_module, source_id)
+  WHERE source_module IS NOT NULL AND source_id IS NOT NULL AND status <> 'Reversed';
+
+CREATE INDEX IF NOT EXISTS idx_coa_parent ON public.chart_of_accounts(parent_id);
+CREATE INDEX IF NOT EXISTS idx_coa_category ON public.chart_of_accounts(category);
+CREATE INDEX IF NOT EXISTS idx_gl_account_date ON public.general_ledger_entries(account_id, entry_date);
+CREATE INDEX IF NOT EXISTS idx_gl_date ON public.general_ledger_entries(entry_date);
+CREATE INDEX IF NOT EXISTS idx_gl_voucher ON public.general_ledger_entries(voucher_id);
+CREATE INDEX IF NOT EXISTS idx_vouchers_date_status ON public.accounting_vouchers(voucher_date, status);
+
+ALTER TABLE public.chart_of_accounts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.financial_years ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.accounting_periods ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.accounting_vouchers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.accounting_voucher_lines ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.general_ledger_entries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.account_opening_balances ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.accounting_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.account_audit_logs ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Allow public all chart_of_accounts" ON public.chart_of_accounts;
+CREATE POLICY "Allow public all chart_of_accounts" ON public.chart_of_accounts FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow public all financial_years" ON public.financial_years;
+CREATE POLICY "Allow public all financial_years" ON public.financial_years FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow public all accounting_periods" ON public.accounting_periods;
+CREATE POLICY "Allow public all accounting_periods" ON public.accounting_periods FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow public all accounting_vouchers" ON public.accounting_vouchers;
+CREATE POLICY "Allow public all accounting_vouchers" ON public.accounting_vouchers FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow public all accounting_voucher_lines" ON public.accounting_voucher_lines;
+CREATE POLICY "Allow public all accounting_voucher_lines" ON public.accounting_voucher_lines FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow public all general_ledger_entries" ON public.general_ledger_entries;
+CREATE POLICY "Allow public all general_ledger_entries" ON public.general_ledger_entries FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow public all account_opening_balances" ON public.account_opening_balances;
+CREATE POLICY "Allow public all account_opening_balances" ON public.account_opening_balances FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow public all accounting_settings" ON public.accounting_settings;
+CREATE POLICY "Allow public all accounting_settings" ON public.accounting_settings FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow public all account_audit_logs" ON public.account_audit_logs;
+CREATE POLICY "Allow public all account_audit_logs" ON public.account_audit_logs FOR ALL USING (true) WITH CHECK (true);
+
+GRANT ALL ON public.chart_of_accounts TO postgres, anon, authenticated, service_role;
+GRANT ALL ON public.financial_years TO postgres, anon, authenticated, service_role;
+GRANT ALL ON public.accounting_periods TO postgres, anon, authenticated, service_role;
+GRANT ALL ON public.accounting_vouchers TO postgres, anon, authenticated, service_role;
+GRANT ALL ON public.accounting_voucher_lines TO postgres, anon, authenticated, service_role;
+GRANT ALL ON public.general_ledger_entries TO postgres, anon, authenticated, service_role;
+GRANT ALL ON public.account_opening_balances TO postgres, anon, authenticated, service_role;
+GRANT ALL ON public.accounting_settings TO postgres, anon, authenticated, service_role;
+GRANT ALL ON public.account_audit_logs TO postgres, anon, authenticated, service_role;
+
