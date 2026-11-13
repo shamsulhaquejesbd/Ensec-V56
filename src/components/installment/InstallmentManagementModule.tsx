@@ -49,6 +49,7 @@ import {
   PaymentType,
   InstallmentFrequency,
 } from '../../types/installment.ts';
+import { SalesOrder } from '../../types/erp.ts';
 import { calculateEarlySettlement } from '../../lib/installmentAutomation.ts';
 
 interface InstallmentManagementModuleProps {
@@ -67,6 +68,7 @@ export const InstallmentManagementModule: React.FC<InstallmentManagementModulePr
     customers,
     distributors,
     products,
+    salesOrders,
     banks,
     currentUser,
     createInstallmentPlan,
@@ -117,6 +119,7 @@ export const InstallmentManagementModule: React.FC<InstallmentManagementModulePr
   });
   const [newPlanFrequency, setNewPlanFrequency] = useState<InstallmentFrequency>('Monthly');
   const [newPlanInvoiceRef, setNewPlanInvoiceRef] = useState(`INV-${Date.now().toString().slice(-4)}`);
+  const [invoiceRefMode, setInvoiceRefMode] = useState<'order' | 'manual'>('order');
   const [newPlanGuarantorName, setNewPlanGuarantorName] = useState('');
   const [newPlanGuarantorPhone, setNewPlanGuarantorPhone] = useState('');
   const [newPlanGuarantorNID, setNewPlanGuarantorNID] = useState('');
@@ -148,6 +151,156 @@ export const InstallmentManagementModule: React.FC<InstallmentManagementModulePr
   const [settlementNotes, setSettlementNotes] = useState('');
   const [isSubmittingSettlement, setIsSubmittingSettlement] = useState(false);
   const [settlementFeedback, setSettlementFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  // Track order numbers / salesOrderIds that already have a non-cancelled installment agreement
+  const usedInvoiceRefs = useMemo(() => {
+    const set = new Set<string>();
+    installmentPlans.forEach((plan) => {
+      if (plan.status !== 'Cancelled' && plan.invoiceReference) {
+        set.add(String(plan.invoiceReference).trim().toLowerCase());
+      }
+    });
+    return set;
+  }, [installmentPlans]);
+
+  const usedSalesOrderIds = useMemo(() => {
+    const set = new Set<string>();
+    installmentPlans.forEach((plan) => {
+      if (plan.status !== 'Cancelled' && plan.salesOrderId) {
+        set.add(String(plan.salesOrderId).trim().toLowerCase());
+      }
+    });
+    return set;
+  }, [installmentPlans]);
+
+  // Selected customer & their available credit orders (excluding already-linked orders)
+  const selectedCustomerObj = useMemo(
+    () => customers.find((c) => c.id === newPlanCustomer) || null,
+    [customers, newPlanCustomer]
+  );
+
+  const getAllCustomerCreditOrders = (custId: string): SalesOrder[] => {
+    if (!custId) return [];
+    const cust = customers.find((c) => c.id === custId);
+    const custNameLower = cust?.name?.trim().toLowerCase() || '';
+    return salesOrders.filter((order) => {
+      if (order.status === 'Cancelled') return false;
+      const matchesCustomer =
+        order.customerId === custId ||
+        (custNameLower && order.customerName?.trim().toLowerCase() === custNameLower);
+      if (!matchesCustomer) return false;
+
+      const pm = String(order.paymentMethod || '').toLowerCase();
+      const ps = String(order.paymentStatus || '').toLowerCase();
+      const due =
+        order.dueAmountBDT ??
+        (Number(order.netAmountBDT || 0) - Number(order.paidAmountBDT || 0));
+      return pm.includes('credit') || due > 0 || ps === 'unpaid' || ps === 'partially paid';
+    });
+  };
+
+  const getCustomerCreditOrders = (custId: string): SalesOrder[] => {
+    return getAllCustomerCreditOrders(custId).filter((order) => {
+      const ordNoLower = order.orderNumber?.trim().toLowerCase() || '';
+      const ordIdLower = order.id ? String(order.id).trim().toLowerCase() : '';
+      if (ordNoLower && usedInvoiceRefs.has(ordNoLower)) return false;
+      if (ordIdLower && usedSalesOrderIds.has(ordIdLower)) return false;
+      return true;
+    });
+  };
+
+  const allCustomerCreditOrdersCount = useMemo(
+    () => getAllCustomerCreditOrders(newPlanCustomer).length,
+    [salesOrders, customers, newPlanCustomer]
+  );
+
+  const customerCreditOrders = useMemo(
+    () => getCustomerCreditOrders(newPlanCustomer),
+    [salesOrders, customers, newPlanCustomer, usedInvoiceRefs, usedSalesOrderIds]
+  );
+
+  const selectedCreditOrder = useMemo(
+    () => customerCreditOrders.find((o) => o.orderNumber === newPlanInvoiceRef) || null,
+    [customerCreditOrders, newPlanInvoiceRef]
+  );
+
+  const handleCustomerChange = (custId: string) => {
+    setNewPlanCustomer(custId);
+    if (!custId) {
+      setInvoiceRefMode('manual');
+      setNewPlanInvoiceRef(`INV-${Date.now().toString().slice(-4)}`);
+      return;
+    }
+
+    const orders = getCustomerCreditOrders(custId);
+    if (orders.length > 0) {
+      setInvoiceRefMode('order');
+      setNewPlanInvoiceRef('');
+      setNewPlanProduct('');
+      setNewPlanQty(1);
+      setNewPlanTotalPrice(0);
+      setNewPlanDownPayment(0);
+    } else {
+      setInvoiceRefMode('manual');
+      setNewPlanInvoiceRef(`INV-${Date.now().toString().slice(-4)}`);
+    }
+  };
+
+  const handleCreditOrderSelect = (orderNo: string) => {
+    if (orderNo === '__MANUAL__') {
+      setInvoiceRefMode('manual');
+      setNewPlanInvoiceRef(`INV-${Date.now().toString().slice(-4)}`);
+      return;
+    }
+
+    setNewPlanInvoiceRef(orderNo);
+    const order = customerCreditOrders.find((o) => o.orderNumber === orderNo);
+    if (!order) return;
+
+    if (order.distributorId) {
+      setNewPlanDistributor(order.distributorId);
+    }
+
+    const firstItem = order.items?.[0];
+    const matchedProd = firstItem
+      ? products.find(
+          (p) =>
+            p.id === firstItem.productId ||
+            (firstItem.productName &&
+              p.name?.trim().toLowerCase() === firstItem.productName.trim().toLowerCase())
+        )
+      : undefined;
+
+    if (matchedProd) {
+      setNewPlanProduct(matchedProd.id);
+    }
+
+    const orderQty =
+      order.items && order.items.length > 0
+        ? Math.max(
+            1,
+            order.items.length === 1
+              ? Number(firstItem?.quantity) || 1
+              : order.items.reduce((sum, it) => sum + (Number(it.quantity) || 0), 0)
+          )
+        : 1;
+    setNewPlanQty(orderQty);
+
+    const orderTotalPrice =
+      Number(
+        order.netAmountBDT ||
+          order.subTotalBDT ||
+          (firstItem ? firstItem.lineTotalBDT || (firstItem.unitPriceBDT || 0) * orderQty : 0)
+      ) || 0;
+    setNewPlanTotalPrice(orderTotalPrice);
+
+    const paidAlready = Number(order.paidAmountBDT) || 0;
+    if (paidAlready > 0 && paidAlready < orderTotalPrice) {
+      setNewPlanDownPayment(paidAlready);
+    } else {
+      setNewPlanDownPayment(Math.round(orderTotalPrice * 0.25));
+    }
+  };
 
   // Auto calculate product price when product or qty changes
   const handleProductSelect = (prodId: string) => {
@@ -214,6 +367,14 @@ export const InstallmentManagementModule: React.FC<InstallmentManagementModulePr
       setPlanFormFeedback({ type: 'error', message: 'Financed amount must be greater than zero.' });
       return;
     }
+    const trimmedRefLower = newPlanInvoiceRef.trim().toLowerCase();
+    if (trimmedRefLower && usedInvoiceRefs.has(trimmedRefLower)) {
+      setPlanFormFeedback({
+        type: 'error',
+        message: `An installment agreement already exists for order/invoice "${newPlanInvoiceRef.trim()}". Please select a different order.`,
+      });
+      return;
+    }
 
     setIsSubmittingPlan(true);
     setPlanFormFeedback(null);
@@ -231,7 +392,8 @@ export const InstallmentManagementModule: React.FC<InstallmentManagementModulePr
         customerDistrict: custObj?.district || 'Dhaka',
         distributorId: distObj?.id,
         distributorName: distObj?.name,
-        invoiceReference: newPlanInvoiceRef,
+        salesOrderId: selectedCreditOrder?.id,
+        invoiceReference: newPlanInvoiceRef.trim(),
         productId: newPlanProduct,
         productName: prodObj?.name || 'Ensec Battery Pack',
         productModel: prodObj?.model || 'ET-48100',
@@ -267,6 +429,18 @@ export const InstallmentManagementModule: React.FC<InstallmentManagementModulePr
           type: 'success',
           message: `Installment Agreement created successfully! Financed ৳${calculatedFinancedAmount.toLocaleString()} over ${newPlanDuration} months.`,
         });
+        setNewPlanCustomer('');
+        setNewPlanDistributor('');
+        setNewPlanProduct('');
+        setNewPlanQty(1);
+        setNewPlanTotalPrice(0);
+        setNewPlanDownPayment(0);
+        setNewPlanInvoiceRef(`INV-${Date.now().toString().slice(-4)}`);
+        setInvoiceRefMode('order');
+        setNewPlanGuarantorName('');
+        setNewPlanGuarantorPhone('');
+        setNewPlanGuarantorNID('');
+        setNewPlanRemarks('');
         setTimeout(() => {
           setIsSubmittingPlan(false);
           setActiveTab('installment-agreements');
@@ -1036,7 +1210,7 @@ export const InstallmentManagementModule: React.FC<InstallmentManagementModulePr
                   </label>
                   <select
                     value={newPlanCustomer}
-                    onChange={(e) => setNewPlanCustomer(e.target.value)}
+                    onChange={(e) => handleCustomerChange(e.target.value)}
                     className="w-full text-xs p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500"
                     required
                   >
@@ -1068,16 +1242,73 @@ export const InstallmentManagementModule: React.FC<InstallmentManagementModulePr
                 </div>
 
                 <div>
-                  <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                    Invoice Reference
-                  </label>
-                  <input
-                    type="text"
-                    value={newPlanInvoiceRef}
-                    onChange={(e) => setNewPlanInvoiceRef(e.target.value)}
-                    className="w-full text-xs p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
-                    placeholder="e.g. INV-2026-081"
-                  />
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs font-medium text-slate-700 dark:text-slate-300">
+                      Invoice Reference
+                    </label>
+                    {newPlanCustomer && customerCreditOrders.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (invoiceRefMode === 'order') {
+                            setInvoiceRefMode('manual');
+                            setNewPlanInvoiceRef(`INV-${Date.now().toString().slice(-4)}`);
+                          } else {
+                            setInvoiceRefMode('order');
+                            setNewPlanInvoiceRef('');
+                          }
+                        }}
+                        className="text-[10px] font-semibold text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+                      >
+                        {invoiceRefMode === 'order' ? 'Manual Entry' : `Credit Orders (${customerCreditOrders.length})`}
+                      </button>
+                    )}
+                  </div>
+
+                  {newPlanCustomer && customerCreditOrders.length > 0 && invoiceRefMode === 'order' ? (
+                    <select
+                      value={newPlanInvoiceRef}
+                      onChange={(e) => handleCreditOrderSelect(e.target.value)}
+                      className="w-full text-xs p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:ring-2 focus:ring-blue-500"
+                    >
+                      <option value="">
+                        -- Select Credit Order Number ({customerCreditOrders.length}) --
+                      </option>
+                      {customerCreditOrders.map((ord) => {
+                        const due = Math.max(
+                          0,
+                          ord.dueAmountBDT ?? (Number(ord.netAmountBDT || 0) - Number(ord.paidAmountBDT || 0))
+                        );
+                        return (
+                          <option key={ord.id} value={ord.orderNumber}>
+                            {ord.orderNumber} — ৳{Number(ord.netAmountBDT || 0).toLocaleString()} (Due: ৳{due.toLocaleString()}) • {ord.date}
+                          </option>
+                        );
+                      })}
+                      <option value="__MANUAL__">+ Enter Manual Invoice Reference...</option>
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      value={newPlanInvoiceRef}
+                      onChange={(e) => setNewPlanInvoiceRef(e.target.value)}
+                      className="w-full text-xs p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                      placeholder="e.g. INV-2026-081"
+                    />
+                  )}
+
+                  {newPlanCustomer && selectedCreditOrder && (
+                    <p className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-1 font-medium">
+                      Auto-filled from credit order {selectedCreditOrder.orderNumber} ({selectedCreditOrder.items?.length || 0} item{selectedCreditOrder.items?.length === 1 ? '' : 's'})
+                    </p>
+                  )}
+                  {newPlanCustomer && customerCreditOrders.length === 0 && (
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      {allCustomerCreditOrdersCount > 0
+                        ? `All ${allCustomerCreditOrdersCount} credit order${allCustomerCreditOrdersCount === 1 ? '' : 's'} for ${selectedCustomerObj?.name || 'this customer'} already have installment agreements — manual reference enabled.`
+                        : `No credit orders found for ${selectedCustomerObj?.name || 'this customer'} — manual reference enabled.`}
+                    </p>
+                  )}
                 </div>
               </div>
             </div>
@@ -1105,6 +1336,11 @@ export const InstallmentManagementModule: React.FC<InstallmentManagementModulePr
                       </option>
                     ))}
                   </select>
+                  {selectedCreditOrder && selectedCreditOrder.items && selectedCreditOrder.items.length > 1 && (
+                    <p className="text-[10px] text-blue-600 dark:text-blue-400 mt-1">
+                      Order items: {selectedCreditOrder.items.map((it) => `${it.productName} × ${it.quantity}`).join(', ')}
+                    </p>
+                  )}
                 </div>
 
                 <div>
