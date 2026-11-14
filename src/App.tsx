@@ -50,7 +50,15 @@ import { RawMaterialInventoryPage } from './components/inventory/RawMaterialInve
 import { WarrantyManagementModule } from './components/warranty/WarrantyManagementModule.tsx';
 import { LoginPage } from './components/auth/LoginPage.tsx';
 import { ProductionCostSheetModal } from './components/manufacturing/ProductionCostSheetModal.tsx';
-import { canViewManufacturingCostSheet } from './types/pagePermissions.ts';
+import {
+  canViewManufacturingCostSheet,
+  canViewManufacturingCostDashboard,
+  canPostFactoryExpense,
+  canApproveFactoryExpense,
+  canAllocateManufacturingOverhead,
+  canRollbackCostAllocation,
+  hasAnyManufacturingCostingAccess,
+} from './types/pagePermissions.ts';
 import { ShieldAlert, ArrowLeft, Menu } from 'lucide-react';
 
 // Maps incoming browser URL pathname -> ERP activeModule ID
@@ -164,6 +172,7 @@ export function moduleToPathname(module: string): string {
     'field-tracker': '/field-force',
     'inventory-stock': '/inventory',
     'manufacturing': '/production',
+    'manufacturing-costing': '/costing',
     'finance-cashbook': '/accounts',
     'payroll': '/payroll',
     'sales-orders': '/sales',
@@ -259,6 +268,16 @@ function MainApp() {
     currentUser.role === 'Super Admin' ||
     (activeModule === 'manufacturing-cost-sheet'
       ? canViewManufacturingCostSheet(currentUser)
+      : activeModule === 'manufacturing-costing'
+      ? hasAnyManufacturingCostingAccess(currentUser)
+      : activeModule === 'manufacturing-expenses'
+      ? canViewManufacturingCostDashboard(currentUser) ||
+        canPostFactoryExpense(currentUser) ||
+        canApproveFactoryExpense(currentUser)
+      : activeModule === 'manufacturing-allocations'
+      ? canViewManufacturingCostDashboard(currentUser) ||
+        canAllocateManufacturingOverhead(currentUser) ||
+        canRollbackCostAllocation(currentUser)
       : currentUserHasPermission(activeModule));
 
   const isMobilePortal = activeModule === 'mobile-field';
@@ -388,7 +407,7 @@ function MainApp() {
               {activeModule === 'raw-material-receive' && <RawMaterialReceivePage />}
               {activeModule === 'raw-material-inventory' && <RawMaterialInventoryPage />}
               {activeModule === 'manufacturing' && (
-                <ManufacturingModule initialTab="orders" onNavigate={(mod) => navigateTo(mod)} />
+                <ManufacturingModule key="manufacturing" initialTab="orders" onNavigate={(mod) => navigateTo(mod)} />
               )}
               {activeModule === 'manufacturing-cost-sheet' && canViewManufacturingCostSheet(currentUser) && (() => {
                 const pathParts = typeof window !== 'undefined'
@@ -440,13 +459,13 @@ function MainApp() {
                 );
               })()}
               {activeModule === 'manufacturing-costing' && (
-                <ManufacturingModule initialTab="cost-dashboard" onNavigate={(mod) => navigateTo(mod)} />
+                <ManufacturingModule key="manufacturing-costing" initialTab="cost-dashboard" onNavigate={(mod) => navigateTo(mod)} />
               )}
               {activeModule === 'manufacturing-expenses' && (
-                <ManufacturingModule initialTab="expenses" onNavigate={(mod) => navigateTo(mod)} />
+                <ManufacturingModule key="manufacturing-expenses" initialTab="expenses" onNavigate={(mod) => navigateTo(mod)} />
               )}
               {activeModule === 'manufacturing-allocations' && (
-                <ManufacturingModule initialTab="allocations" onNavigate={(mod) => navigateTo(mod)} />
+                <ManufacturingModule key="manufacturing-allocations" initialTab="allocations" onNavigate={(mod) => navigateTo(mod)} />
               )}
               {activeModule === 'warehouse' && <WarehouseModule />}
               {(activeModule === 'stock' || activeModule.startsWith('stock-')) && (

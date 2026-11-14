@@ -108,28 +108,21 @@ export const PageWisePermissionsEditor: React.FC<PageWisePermissionsEditorProps>
   // Self-approval override option
   const [allowSelfApproval, setAllowSelfApproval] = useState<boolean>(false);
 
-  // Keep track of the currently loaded user ID to prevent wiping changes on save
-  const lastLoadedUserIdRef = useRef<string | null>(null);
+  // Keep track of the currently loaded user & synced permissions signature to prevent wiping unsaved edits
+  const lastLoadedSignatureRef = useRef<string | null>(null);
+  const hasUnsavedChangesRef = useRef<boolean>(false);
 
   useEffect(() => {
     if (initialUserId && initialUserId !== selectedUserId) {
+      hasUnsavedChangesRef.current = false;
       setSelectedUserId(initialUserId);
     }
   }, [initialUserId]);
 
-  // Initialize working permissions whenever selected target user ID changes
-  useEffect(() => {
-    if (!selectedUser) return;
-    
-    // Only re-hydrate from user object if we switched to a different staff member
-    if (lastLoadedUserIdRef.current === selectedUser.id) {
-      return;
-    }
-    lastLoadedUserIdRef.current = selectedUser.id;
-
+  const buildPermissionsMapForUser = (targetUser: User): UserPagePermissionsMap => {
     const userMap: UserPagePermissionsMap = {};
-    const existingMap = selectedUser.permissions?.pagePermissions || {};
-    const allowedMods = selectedUser.permissions?.allowedModules || [];
+    const existingMap = targetUser.permissions?.pagePermissions || {};
+    const allowedMods = targetUser.permissions?.allowedModules || [];
 
     ALL_ERP_PAGES.forEach((page) => {
       userMap[page.id] = {};
@@ -138,10 +131,10 @@ export const PageWisePermissionsEditor: React.FC<PageWisePermissionsEditorProps>
       page.actions.forEach((act) => {
         if (pageExisting && pageExisting[act.key] !== undefined) {
           userMap[page.id][act.key] = Boolean(pageExisting[act.key]);
-        } else if (selectedUser.role === 'Super Admin') {
+        } else if (targetUser.role === 'Super Admin') {
           userMap[page.id][act.key] = true;
         } else if (page.id === 'raw-material-inventory' && ['view_raw_material_stock_value', 'view_raw_material_purchase_rate', 'view_batch_stock_value'].includes(act.key)) {
-          const isFactory = selectedUser.role === 'Factory Manager' || selectedUser.role === 'Warehouse Manager' || (selectedUser.department && selectedUser.department.toLowerCase().includes('factory'));
+          const isFactory = targetUser.role === 'Factory Manager' || targetUser.role === 'Warehouse Manager' || (targetUser.department && targetUser.department.toLowerCase().includes('factory'));
           if (!isFactory && pageExisting && pageExisting['view_valuation'] !== undefined) {
             userMap[page.id][act.key] = Boolean(pageExisting['view_valuation']);
           } else {
@@ -166,7 +159,28 @@ export const PageWisePermissionsEditor: React.FC<PageWisePermissionsEditorProps>
       });
     });
 
-    setWorkingPermissions(userMap);
+    return userMap;
+  };
+
+  // Initialize working permissions whenever selected user changes or remote user data refreshes without unsaved edits
+  useEffect(() => {
+    if (!selectedUser) return;
+
+    const existingMap = selectedUser.permissions?.pagePermissions || {};
+    const signature = `${selectedUser.id}::${selectedUser.role}::${JSON.stringify(existingMap)}::${JSON.stringify(selectedUser.permissions?.allowedModules || [])}`;
+    const isSameUser = lastLoadedSignatureRef.current?.startsWith(`${selectedUser.id}::`);
+
+    if (lastLoadedSignatureRef.current === signature) {
+      return;
+    }
+    if (isSameUser && hasUnsavedChangesRef.current) {
+      return;
+    }
+
+    lastLoadedSignatureRef.current = signature;
+    hasUnsavedChangesRef.current = false;
+
+    setWorkingPermissions(buildPermissionsMapForUser(selectedUser));
     setAllowSelfApproval(Boolean(existingMap['_system']?.['approve_own']));
   }, [selectedUserId, selectedUser]);
 
@@ -177,6 +191,7 @@ export const PageWisePermissionsEditor: React.FC<PageWisePermissionsEditorProps>
 
   // Toggle single action permission
   const handleToggleAction = (pageId: string, actionKey: string) => {
+    hasUnsavedChangesRef.current = true;
     setWorkingPermissions((prev) => {
       const pageObj = { ...(prev[pageId] || {}) };
       const currentVal = Boolean(pageObj[actionKey]);
@@ -205,6 +220,7 @@ export const PageWisePermissionsEditor: React.FC<PageWisePermissionsEditorProps>
 
   // Select all actions for a specific page
   const handleSelectAllForPage = (page: ERPPageDef) => {
+    hasUnsavedChangesRef.current = true;
     setWorkingPermissions((prev) => {
       const pageObj = { ...(prev[page.id] || {}) };
       page.actions.forEach((act) => {
@@ -219,6 +235,7 @@ export const PageWisePermissionsEditor: React.FC<PageWisePermissionsEditorProps>
 
   // Deselect all actions for a specific page
   const handleDeselectAllForPage = (page: ERPPageDef) => {
+    hasUnsavedChangesRef.current = true;
     setWorkingPermissions((prev) => {
       const pageObj = { ...(prev[page.id] || {}) };
       page.actions.forEach((act) => {
@@ -268,6 +285,7 @@ export const PageWisePermissionsEditor: React.FC<PageWisePermissionsEditorProps>
       });
     });
 
+    hasUnsavedChangesRef.current = true;
     setWorkingPermissions(newMap);
     setSaveSuccessNotice(`Applied "${tpl.name}" template. Review and click "Save Changes" to commit.`);
   };
@@ -294,6 +312,7 @@ export const PageWisePermissionsEditor: React.FC<PageWisePermissionsEditorProps>
       });
     });
 
+    hasUnsavedChangesRef.current = true;
     setWorkingPermissions(newMap);
     setSaveSuccessNotice(`Cloned permissions from ${srcUser.name}. Click "Save Changes" to finalize.`);
   };
@@ -307,6 +326,7 @@ export const PageWisePermissionsEditor: React.FC<PageWisePermissionsEditorProps>
         fullMap[page.id][act.key] = true;
       });
     });
+    hasUnsavedChangesRef.current = true;
     setWorkingPermissions(fullMap);
   };
 
@@ -319,26 +339,17 @@ export const PageWisePermissionsEditor: React.FC<PageWisePermissionsEditorProps>
         emptyMap[page.id][act.key] = false;
       });
     });
+    hasUnsavedChangesRef.current = true;
     setWorkingPermissions(emptyMap);
   };
 
   // Reset to saved
   const handleReset = () => {
     if (!selectedUser) return;
+    hasUnsavedChangesRef.current = false;
     const existingMap = selectedUser.permissions?.pagePermissions || {};
-    const resetMap: UserPagePermissionsMap = {};
-
-    ALL_ERP_PAGES.forEach((page) => {
-      resetMap[page.id] = {};
-      page.actions.forEach((act) => {
-        if (existingMap[page.id] && existingMap[page.id][act.key] !== undefined) {
-          resetMap[page.id][act.key] = Boolean(existingMap[page.id][act.key]);
-        } else {
-          resetMap[page.id][act.key] = selectedUser.role === 'Super Admin';
-        }
-      });
-    });
-    setWorkingPermissions(resetMap);
+    setWorkingPermissions(buildPermissionsMapForUser(selectedUser));
+    setAllowSelfApproval(Boolean(existingMap['_system']?.['approve_own']));
     setSaveSuccessNotice('Reverted all unsaved changes to stored database values.');
   };
 
@@ -365,6 +376,8 @@ export const PageWisePermissionsEditor: React.FC<PageWisePermissionsEditorProps>
       }
 
       const res = await updateUserPagePermissions(selectedUser.id, finalMap);
+      hasUnsavedChangesRef.current = false;
+      lastLoadedSignatureRef.current = `${selectedUser.id}::${selectedUser.role}::${JSON.stringify(finalMap)}::${JSON.stringify(Object.keys(finalMap).filter((p) => finalMap[p]?.view))}`;
 
       setJustSaved(true);
       setTimeout(() => setJustSaved(false), 4500);
@@ -657,7 +670,10 @@ export const PageWisePermissionsEditor: React.FC<PageWisePermissionsEditorProps>
               <input
                 type="checkbox"
                 checked={allowSelfApproval}
-                onChange={(e) => setAllowSelfApproval(e.target.checked)}
+                onChange={(e) => {
+                  hasUnsavedChangesRef.current = true;
+                  setAllowSelfApproval(e.target.checked);
+                }}
                 className="w-4 h-4 rounded text-purple-600 focus:ring-purple-500 cursor-pointer"
               />
               <span className="text-[11px] font-medium leading-tight">

@@ -15,7 +15,11 @@ import {
 } from 'lucide-react';
 import { ProductionOrder, ProductionCostRecord } from '../../types/erp';
 import { ProductionCostDetailedRecord } from '../../types/costing';
-import { canViewManufacturingCostSheet } from '../../types/pagePermissions';
+import {
+  canViewManufacturingCostSheet,
+  canSaveCostSheetToDB,
+  canExportManufacturingCostSheets,
+} from '../../types/pagePermissions';
 import { getManufacturingAuthHeaders } from '../../lib/manufacturingPermissions';
 
 interface ProductionCostSheetModalProps {
@@ -55,6 +59,8 @@ export const ProductionCostSheetModal: React.FC<ProductionCostSheetModalProps> =
   const [serverDeniedReason, setServerDeniedReason] = useState<string | null>(null);
 
   const hasCostSheetPermission = canViewManufacturingCostSheet(currentUser);
+  const canSaveCostSheet = canSaveCostSheetToDB(currentUser);
+  const canExportCostSheet = canExportManufacturingCostSheets(currentUser);
 
   // Enforce backend/API authorization when opening Cost Sheet
   useEffect(() => {
@@ -155,10 +161,48 @@ export const ProductionCostSheetModal: React.FC<ProductionCostSheetModalProps> =
   }, [currentOrder, totalOrderQty, finishedGoodsProductionReceipts, receiveSuccess, order]);
 
   const handlePrint = () => {
+    if (!canExportCostSheet) return;
     window.print();
   };
 
+  const handleExportCSV = () => {
+    if (!canExportCostSheet) return;
+    const rows: string[][] = [
+      ['Executive Production Cost Sheet', detailedRecord.batchNumber || '', detailedRecord.orderNumber || ''],
+      ['Product Name', detailedRecord.productName || '', 'Model', detailedRecord.productSku || ''],
+      ['Production Date', detailedRecord.productionDate || '', 'Factory Location', detailedRecord.factoryLocation || ''],
+      ['Planned Qty', String(detailedRecord.plannedQty || 0), 'Good Finished Qty', String(detailedRecord.goodFinishedQty || 0)],
+      ['Valuation Method', valuationMethod],
+      [],
+      ['Cost Component', 'Amount (BDT)'],
+      ['Raw Material Cost', String(detailedRecord.rawMaterialCost || 0)],
+      ['Direct Labour Cost', String(detailedRecord.directLabourCost || 0)],
+      ['Direct Overtime Cost', String(detailedRecord.directOvertimeCost || 0)],
+      ['Electricity Allocation', String(detailedRecord.electricityAllocation || 0)],
+      ['Factory Rent Allocation', String(detailedRecord.factoryRentAllocation || 0)],
+      ['Generator Fuel', String(detailedRecord.generatorFuel || 0)],
+      ['Machine Maintenance', String(detailedRecord.machineMaintenance || 0)],
+      ['Packaging Cost', String(detailedRecord.packagingCost || 0)],
+      ['Other Production Expenses', String(detailedRecord.otherProductionExpenses || 0)],
+      ['Total Manufacturing Cost', String(detailedRecord.totalManufacturingCost || 0)],
+      ['Actual Unit Production Cost', String(detailedRecord.actualUnitProductionCost || 0)],
+    ];
+    const csvContent = rows
+      .map((r) => r.map((cell) => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(','))
+      .join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `cost-sheet-${(detailedRecord.batchNumber || detailedRecord.orderNumber || 'batch').replace(/[^a-zA-Z0-9_-]/g, '_')}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   const handleSaveCostSheet = async () => {
+    if (!canSaveCostSheet) return;
     setIsSaving(true);
     try {
       const costRecord = calculateProductionCost(order.id, valuationMethod, true);
@@ -293,14 +337,28 @@ export const ProductionCostSheetModal: React.FC<ProductionCostSheetModalProps> =
           </div>
 
           <div className="flex items-center gap-2">
-            <button
-              onClick={handlePrint}
-              className="p-2 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition flex items-center gap-1.5 font-medium"
-              title="Print Official Cost Sheet"
-            >
-              <Printer className="w-4 h-4" />
-              <span>Print Cost Sheet</span>
-            </button>
+            {canExportCostSheet && (
+              <>
+                <button
+                  type="button"
+                  onClick={handleExportCSV}
+                  className="p-2 rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50/70 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 transition flex items-center gap-1.5 font-medium cursor-pointer"
+                  title="Export Cost Sheet as CSV"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>Export CSV</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handlePrint}
+                  className="p-2 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition flex items-center gap-1.5 font-medium cursor-pointer"
+                  title="Print Official Cost Sheet"
+                >
+                  <Printer className="w-4 h-4" />
+                  <span>Print Cost Sheet</span>
+                </button>
+              </>
+            )}
             <button
               onClick={onClose}
               className="p-2 rounded-xl text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
@@ -937,19 +995,21 @@ export const ProductionCostSheetModal: React.FC<ProductionCostSheetModalProps> =
             >
               Close
             </button>
-            <button
-              type="button"
-              onClick={handleSaveCostSheet}
-              disabled={isSaving || saveSuccess}
-              className={`px-4 py-2 rounded-xl border font-bold text-xs flex items-center gap-1.5 transition cursor-pointer shadow-xs ${
-                saveSuccess
-                  ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300'
-                  : 'border-blue-300 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/60'
-              }`}
-            >
-              <FileSpreadsheet className="w-3.5 h-3.5" />
-              <span>{saveSuccess ? 'Saved to Database!' : isSaving ? 'Saving to Database...' : 'Save Cost Sheet to Database'}</span>
-            </button>
+            {canSaveCostSheet && (
+              <button
+                type="button"
+                onClick={handleSaveCostSheet}
+                disabled={isSaving || saveSuccess}
+                className={`px-4 py-2 rounded-xl border font-bold text-xs flex items-center gap-1.5 transition cursor-pointer shadow-xs ${
+                  saveSuccess
+                    ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300'
+                    : 'border-blue-300 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/60'
+                }`}
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                <span>{saveSuccess ? 'Saved to Database!' : isSaving ? 'Saving to Database...' : 'Save Cost Sheet to Database'}</span>
+              </button>
+            )}
             {isAlreadyReceived ? (
               <span
                 className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 font-bold text-xs flex items-center gap-1.5 border border-slate-200 dark:border-slate-700 select-none cursor-not-allowed shadow-none"

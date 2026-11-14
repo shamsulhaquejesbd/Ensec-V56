@@ -57,6 +57,7 @@ import {
   hasPageAction,
   hasPageAccess,
   canApproveTransaction,
+  hasAnyManufacturingCostingAccess,
   InventoryBatch,
   InventoryMovement,
   RawMaterialReceipt,
@@ -9935,24 +9936,29 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       'id' | 'voucherNumber' | 'approvalStatus' | 'allocationStatus' | 'allocatedAmount' | 'remainingUnallocated' | 'createdAt'
     >
   ): Promise<string> => {
+    if (!hasPageAction(currentUser, 'manufacturing-costing', 'post_expense')) {
+      throw new Error('Access Restricted: You do not have "Post Factory Expense" permission.');
+    }
+
     const year = new Date().getFullYear();
     const prefix = data.mainCategory === 'Factory Expenses' ? 'FAC' : 'ADM';
     const seq = Math.floor(100 + Math.random() * 900);
     const voucherNumber = `EXP-${prefix}-${year}-${seq}`;
     const id = `exp-${prefix.toLowerCase()}-${Date.now()}`;
+    const canAutoApprove = hasPageAction(currentUser, 'manufacturing-costing', 'approve_expense');
 
     const newEntry: ExpenseEntry = {
       ...data,
       id,
       voucherNumber,
-      approvalStatus: 'Approved',
+      approvalStatus: canAutoApprove ? 'Approved' : 'Pending Approval',
       allocationStatus: data.mainCategory === 'Factory Expenses' ? 'Unallocated' : 'Non-Production',
       allocatedAmount: 0,
       remainingUnallocated: data.amount,
-      approvedBy: currentUser.name || 'Super Admin',
-      approvedAt: new Date().toISOString().substring(0, 16).replace('T', ' '),
+      approvedBy: canAutoApprove ? (currentUser.name || 'Super Admin') : undefined,
+      approvedAt: canAutoApprove ? new Date().toISOString().substring(0, 16).replace('T', ' ') : undefined,
       journalVoucherNo: `JV-${prefix}-${year}-${Math.floor(1000 + Math.random() * 9000)}`,
-      createdBy: currentUser.name || 'Accounts Officer',
+      createdBy: currentUser.name || data.createdBy || 'Accounts Officer',
       createdAt: new Date().toISOString(),
     };
 
@@ -10058,22 +10064,33 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const approveExpenseEntry = (id: string, approverName?: string) => {
+    if (!hasPageAction(currentUser, 'manufacturing-costing', 'approve_expense')) {
+      console.warn('Permission Denied: approve_expense is required to approve expense vouchers.');
+      return;
+    }
+
     const approver = approverName || currentUser.name || 'Super Admin';
     const approvedAt = new Date().toISOString().substring(0, 16).replace('T', ' ');
 
-    setExpenseEntries((prev) =>
-      prev.map((e) =>
+    setExpenseEntries((prev) => {
+      const updated = prev.map((e) =>
         e.id === id
           ? {
               ...e,
-              approvalStatus: 'Approved',
+              approvalStatus: 'Approved' as const,
               approvedBy: approver,
               approvedAt,
               updatedAt: new Date().toISOString(),
             }
           : e
-      )
-    );
+      );
+      if (typeof window !== 'undefined') {
+        try {
+          localStorage.setItem('ensec_expense_entries', JSON.stringify(updated));
+        } catch {}
+      }
+      return updated;
+    });
 
     const sb = getSupabase();
     if (sb) {
@@ -10095,8 +10112,29 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const deleteExpenseEntry = (id: string) => {
-    setExpenseEntries((prev) => prev.filter((e) => e.id !== id));
-    setCostAllocations((prev) => prev.filter((a) => a.expenseId !== id));
+    if (!hasPageAction(currentUser, 'manufacturing-costing', 'post_expense')) {
+      console.warn('Permission Denied: post_expense is required to delete expense vouchers.');
+      return;
+    }
+
+    setExpenseEntries((prev) => {
+      const updated = prev.filter((e) => e.id !== id);
+      if (typeof window !== 'undefined') {
+        try {
+          localStorage.setItem('ensec_expense_entries', JSON.stringify(updated));
+        } catch {}
+      }
+      return updated;
+    });
+    setCostAllocations((prev) => {
+      const updated = prev.filter((a) => a.expenseId !== id);
+      if (typeof window !== 'undefined') {
+        try {
+          localStorage.setItem('ensec_cost_allocations', JSON.stringify(updated));
+        } catch {}
+      }
+      return updated;
+    });
 
     const sb = getSupabase();
     if (sb) {
@@ -10121,9 +10159,16 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     totalBasisValue?: number;
     notes?: string;
   }): Promise<{ success: boolean; allocationId?: string; error?: string }> => {
+    if (!hasPageAction(currentUser, 'manufacturing-costing', 'allocate_cost')) {
+      return { success: false, error: 'Access Restricted: You do not have "Allocate Overheads" permission.' };
+    }
+
     const expense = expenseEntries.find((e) => e.id === params.expenseId);
     if (!expense) {
       return { success: false, error: 'Expense record not found.' };
+    }
+    if (expense.approvalStatus === 'Pending Approval' || expense.approvalStatus === 'Rejected') {
+      return { success: false, error: 'Expense voucher must be approved before overhead allocation.' };
     }
     if (expense.mainCategory !== 'Factory Expenses') {
       return { success: false, error: 'Only Factory Expenses can be allocated to manufacturing costs.' };
@@ -10314,6 +10359,9 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const deleteCostAllocation = async (allocationId: string): Promise<void> => {
+    if (!hasPageAction(currentUser, 'manufacturing-costing', 'rollback_allocation')) {
+      throw new Error('Access Restricted: You do not have "Roll Back Allocation" permission.');
+    }
     const alloc = costAllocations.find((a) => a.id === allocationId);
     if (!alloc) return;
 
@@ -16628,6 +16676,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const currentUserHasPermission = (moduleId: string): boolean => {
     if (currentUser.role === 'Super Admin') return true;
+    if (moduleId === 'manufacturing-costing') return hasAnyManufacturingCostingAccess(currentUser);
     return hasPageAccess(currentUser, moduleId);
   };
 

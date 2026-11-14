@@ -37,10 +37,16 @@ import { ProductionCostAllocationTab } from './ProductionCostAllocationTab.tsx';
 import { ProductionCostDashboardTab } from './ProductionCostDashboardTab.tsx';
 import { ExpenseEntry } from '../../types/costing.ts';
 import {
+  hasPageAction,
   canViewManufacturingRawMaterialCost,
   canViewManufacturingOptimumConversion,
   canViewManufacturingUnitCost,
   canViewManufacturingCostSheet,
+  canViewManufacturingCostDashboard,
+  canPostFactoryExpense,
+  canApproveFactoryExpense,
+  canAllocateManufacturingOverhead,
+  canRollbackCostAllocation,
 } from '../../types/pagePermissions.ts';
 
 export type ManufacturingTab = 'orders' | 'cost-dashboard' | 'expenses' | 'allocations' | 'bom';
@@ -79,10 +85,45 @@ export const ManufacturingModule: React.FC<ManufacturingModuleProps> = ({ initia
   const canViewOptimumConversion = canViewManufacturingOptimumConversion(currentUser);
   const canViewUnitCostBdt = canViewManufacturingUnitCost(currentUser);
   const canViewCostSheet = canViewManufacturingCostSheet(currentUser);
+
+  const canViewBomOrders = hasPageAction(currentUser, 'manufacturing', 'view');
+  const canCreateBatch = canViewBomOrders && (
+    currentUser?.role === 'Super Admin' ||
+    hasPageAction(currentUser, 'manufacturing', 'create_batch') ||
+    !currentUser?.permissions?.pagePermissions?.manufacturing
+  );
+  const canViewBomTab = canViewBomOrders || hasPageAction(currentUser, 'manufacturing', 'update_bom');
+  const canViewCostDashboardTab = canViewManufacturingCostDashboard(currentUser);
+  const canViewExpensesTab =
+    canViewCostDashboardTab || canPostFactoryExpense(currentUser) || canApproveFactoryExpense(currentUser);
+  const canViewAllocationsTab =
+    canViewCostDashboardTab || canAllocateManufacturingOverhead(currentUser) || canRollbackCostAllocation(currentUser);
+
+  const permittedTabs: ManufacturingTab[] = React.useMemo(() => {
+    const tabs: ManufacturingTab[] = [];
+    if (canViewBomOrders) tabs.push('orders');
+    if (canViewCostDashboardTab) tabs.push('cost-dashboard');
+    if (canViewExpensesTab) tabs.push('expenses');
+    if (canViewAllocationsTab) tabs.push('allocations');
+    if (canViewBomTab) tabs.push('bom');
+    return tabs;
+  }, [canViewBomOrders, canViewCostDashboardTab, canViewExpensesTab, canViewAllocationsTab, canViewBomTab]);
+
   const ordersTableColSpan =
     6 + (canViewRawMaterialCost ? 1 : 0) + (canViewOptimumConversion ? 1 : 0) + (canViewUnitCostBdt ? 1 : 0);
 
-  const [activeTab, setActiveTab] = useState<ManufacturingTab>(initialTab);
+  const [activeTab, setActiveTab] = useState<ManufacturingTab>(() =>
+    permittedTabs.includes(initialTab) ? initialTab : (permittedTabs[0] || initialTab)
+  );
+
+  useEffect(() => {
+    if (permittedTabs.length === 0) return;
+    if (permittedTabs.includes(initialTab)) {
+      setActiveTab(initialTab);
+    } else if (!permittedTabs.includes(activeTab)) {
+      setActiveTab(permittedTabs[0]);
+    }
+  }, [initialTab, permittedTabs.join(',')]);
   const [selectedExpenseForAllocation, setSelectedExpenseForAllocation] = useState<ExpenseEntry | null>(null);
   const [showNewBatchModal, setShowNewBatchModal] = useState(false);
   const [showCreateBOMModal, setShowCreateBOMModal] = useState(false);
@@ -261,78 +302,102 @@ export const ManufacturingModule: React.FC<ManufacturingModuleProps> = ({ initia
 
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex flex-wrap rounded-xl bg-slate-100 dark:bg-slate-800 p-1 text-xs gap-1">
-            <button
-              onClick={() => setActiveTab('orders')}
-              className={`px-3 py-1.5 rounded-lg font-semibold transition-all flex items-center gap-1.5 ${
-                activeTab === 'orders'
-                  ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-              }`}
-            >
-              <Layers className="w-3.5 h-3.5" />
-              <span>Batches & Orders</span>
-            </button>
-            <button
-              onClick={() => setActiveTab('cost-dashboard')}
-              className={`px-3 py-1.5 rounded-lg font-semibold transition-all flex items-center gap-1.5 ${
-                activeTab === 'cost-dashboard'
-                  ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-              }`}
-            >
-              <BarChart3 className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-              <span>Costing Dashboard</span>
-            </button>
-            <button
-              onClick={() => setActiveTab('expenses')}
-              className={`px-3 py-1.5 rounded-lg font-semibold transition-all flex items-center gap-1.5 ${
-                activeTab === 'expenses'
-                  ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-              }`}
-            >
-              <Receipt className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-              <span>Expense Posting</span>
-            </button>
-            <button
-              onClick={() => setActiveTab('allocations')}
-              className={`px-3 py-1.5 rounded-lg font-semibold transition-all flex items-center gap-1.5 ${
-                activeTab === 'allocations'
-                  ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-              }`}
-            >
-              <Sliders className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
-              <span>Cost Allocation</span>
-            </button>
-            <button
-              onClick={() => setActiveTab('bom')}
-              className={`px-3 py-1.5 rounded-lg font-semibold transition-all flex items-center gap-1.5 ${
-                activeTab === 'bom'
-                  ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-              }`}
-            >
-              <Wrench className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-              <span>BOM Master</span>
-            </button>
+            {canViewBomOrders && (
+              <button
+                onClick={() => setActiveTab('orders')}
+                className={`px-3 py-1.5 rounded-lg font-semibold transition-all flex items-center gap-1.5 ${
+                  activeTab === 'orders'
+                    ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                <Layers className="w-3.5 h-3.5" />
+                <span>Batches & Orders</span>
+              </button>
+            )}
+            {canViewCostDashboardTab && (
+              <button
+                onClick={() => setActiveTab('cost-dashboard')}
+                className={`px-3 py-1.5 rounded-lg font-semibold transition-all flex items-center gap-1.5 ${
+                  activeTab === 'cost-dashboard'
+                    ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                <BarChart3 className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                <span>Costing Dashboard</span>
+              </button>
+            )}
+            {canViewExpensesTab && (
+              <button
+                onClick={() => setActiveTab('expenses')}
+                className={`px-3 py-1.5 rounded-lg font-semibold transition-all flex items-center gap-1.5 ${
+                  activeTab === 'expenses'
+                    ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                <Receipt className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                <span>Expense Posting</span>
+              </button>
+            )}
+            {canViewAllocationsTab && (
+              <button
+                onClick={() => setActiveTab('allocations')}
+                className={`px-3 py-1.5 rounded-lg font-semibold transition-all flex items-center gap-1.5 ${
+                  activeTab === 'allocations'
+                    ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                <Sliders className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
+                <span>Cost Allocation</span>
+              </button>
+            )}
+            {canViewBomTab && (
+              <button
+                onClick={() => setActiveTab('bom')}
+                className={`px-3 py-1.5 rounded-lg font-semibold transition-all flex items-center gap-1.5 ${
+                  activeTab === 'bom'
+                    ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                <Wrench className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                <span>BOM Master</span>
+              </button>
+            )}
           </div>
 
-          <button
-            onClick={() => {
-              setWastagePercent(0);
-              setScrapKg(0);
-              setShowNewBatchModal(true);
-            }}
-            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-xl bg-purple-600 hover:bg-purple-700 text-white transition-colors shadow-sm"
-          >
-            <PlusCircle className="w-4 h-4" />
-            <span>Launch Batch</span>
-          </button>
+          {canCreateBatch && (
+            <button
+              onClick={() => {
+                setWastagePercent(0);
+                setScrapKg(0);
+                setShowNewBatchModal(true);
+              }}
+              className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-xl bg-purple-600 hover:bg-purple-700 text-white transition-colors shadow-sm"
+            >
+              <PlusCircle className="w-4 h-4" />
+              <span>Launch Batch</span>
+            </button>
+          )}
         </div>
       </div>
 
-      {activeTab === 'orders' ? (
+      {permittedTabs.length === 0 ? (
+        <div className="p-8 max-w-md mx-auto mt-6 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-sm text-center space-y-3">
+          <div className="w-12 h-12 mx-auto rounded-2xl bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300 flex items-center justify-center">
+            <ShieldAlert className="w-6 h-6" />
+          </div>
+          <h2 className="text-sm font-bold text-slate-900 dark:text-white">
+            Manufacturing Access Restricted
+          </h2>
+          <p className="text-xs text-slate-500">
+            Your account does not have permission to access Manufacturing tabs. Contact your Super Admin to grant access under Manufacturing Costing &amp; BOM or Manufacturing Costing &amp; P&amp;L.
+          </p>
+        </div>
+      ) : activeTab === 'orders' && canViewBomOrders ? (
         <div className="space-y-6">
           {/* Plant KPIs */}
           <div className={`grid grid-cols-1 sm:grid-cols-2 ${canViewOptimumConversion ? 'lg:grid-cols-4' : 'lg:grid-cols-3'} gap-4`}>
@@ -749,7 +814,7 @@ export const ManufacturingModule: React.FC<ManufacturingModuleProps> = ({ initia
             </div>
           </div>
         </div>
-      ) : activeTab === 'cost-dashboard' ? (
+      ) : activeTab === 'cost-dashboard' && canViewCostDashboardTab ? (
         <ProductionCostDashboardTab
           onOpenCostSheet={
             canViewCostSheet
@@ -760,19 +825,23 @@ export const ManufacturingModule: React.FC<ManufacturingModuleProps> = ({ initia
               : undefined
           }
           onNavigate={(tab) => {
-            if (tab === 'expenses') setActiveTab('expenses');
-            else if (tab === 'allocations') setActiveTab('allocations');
-            else if (tab === 'orders') setActiveTab('orders');
+            if (tab === 'expenses' && canViewExpensesTab) setActiveTab('expenses');
+            else if (tab === 'allocations' && canViewAllocationsTab) setActiveTab('allocations');
+            else if (tab === 'orders' && canViewBomOrders) setActiveTab('orders');
           }}
         />
-      ) : activeTab === 'expenses' ? (
+      ) : activeTab === 'expenses' && canViewExpensesTab ? (
         <ExpenseManagementTab
-          onAllocateExpense={(entry) => {
-            setSelectedExpenseForAllocation(entry);
-            setActiveTab('allocations');
-          }}
+          onAllocateExpense={
+            canViewAllocationsTab
+              ? (entry) => {
+                  setSelectedExpenseForAllocation(entry);
+                  setActiveTab('allocations');
+                }
+              : undefined
+          }
         />
-      ) : activeTab === 'allocations' ? (
+      ) : activeTab === 'allocations' && canViewAllocationsTab ? (
         <ProductionCostAllocationTab
           preselectedExpenseId={selectedExpenseForAllocation?.id}
           onOpenCostSheet={
@@ -800,7 +869,7 @@ export const ManufacturingModule: React.FC<ManufacturingModuleProps> = ({ initia
               : undefined
           }
         />
-      ) : (
+      ) : canViewBomTab ? (
         /* Configurable Bill of Materials (BOM) View */
         <div className="space-y-4">
           <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
@@ -956,7 +1025,7 @@ export const ManufacturingModule: React.FC<ManufacturingModuleProps> = ({ initia
             })}
           </div>
         </div>
-      )}
+      ) : null}
 
       {/* Modal: Launch New Production Batch */}
       {showNewBatchModal && (

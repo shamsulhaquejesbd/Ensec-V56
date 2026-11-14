@@ -11,9 +11,13 @@ import { useERP } from '../../context/ERPContext';
 import { 
   Building, DollarSign, Layers, Cpu, PackageCheck, AlertCircle, 
   BarChart3, PieChart, TrendingUp, Calendar, Filter, ArrowUpRight, 
-  ChevronRight, Calculator, CheckCircle2, Factory, Zap
+  ChevronRight, Calculator, CheckCircle2, Factory, Zap, Download, FileSpreadsheet
 } from 'lucide-react';
 import { ProductionCostDetailedRecord } from '../../types/costing';
+import {
+  canSaveCostSheetToDB,
+  canExportManufacturingCostSheets,
+} from '../../types/pagePermissions';
 
 interface ProductionCostDashboardTabProps {
   onOpenCostSheet?: (orderId: string) => void;
@@ -25,14 +29,22 @@ export const ProductionCostDashboardTab: React.FC<ProductionCostDashboardTabProp
   onNavigate
 }) => {
   const { 
+    currentUser,
     getManufacturingCostKPIs, 
     getProductionCostBreakdown,
+    calculateProductionCost,
+    saveProductionCost,
     productionOrders, 
     expenseEntries, 
     costAllocations,
     products,
     formatCurrency 
   } = useERP();
+
+  const canSaveCostSheet = canSaveCostSheetToDB(currentUser);
+  const canExportCostSheets = canExportManufacturingCostSheets(currentUser);
+  const [isSavingAllSheets, setIsSavingAllSheets] = useState(false);
+  const [saveAllDone, setSaveAllDone] = useState(false);
 
   // Filters State
   const [selectedBatchFilter, setSelectedBatchFilter] = useState('All');
@@ -596,16 +608,102 @@ export const ProductionCostDashboardTab: React.FC<ProductionCostDashboardTabProp
 
       {/* Production Batch Cost Sheet Drill-down Table */}
       <div className="p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xs space-y-3">
-        <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-200 dark:border-slate-800">
           <div>
             <h3 className="font-bold text-sm text-slate-900 dark:text-white flex items-center gap-2">
               <Calculator className="w-4 h-4 text-blue-600" />
               <span>Production Batches Cost Sheets Registry</span>
             </h3>
             <p className="text-[11px] text-slate-500">
-              Click &quot;View Cost Sheet&quot; on any batch to inspect the complete 11-row cost breakdown, consumed raw material batches, and journal entries
+              Inspect the 11-row cost breakdown, consumed raw material batches, and journal entries across active production batches
             </p>
           </div>
+          {(canSaveCostSheet || canExportCostSheets) && filteredBatches.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2">
+              {canSaveCostSheet && (
+                <button
+                  type="button"
+                  disabled={isSavingAllSheets}
+                  onClick={async () => {
+                    if (!canSaveCostSheet || !calculateProductionCost || !saveProductionCost) return;
+                    setIsSavingAllSheets(true);
+                    try {
+                      for (const b of filteredBatches) {
+                        const rec = calculateProductionCost(b.productionOrderId, 'FIFO', true);
+                        await saveProductionCost(rec);
+                      }
+                      setSaveAllDone(true);
+                      setTimeout(() => setSaveAllDone(false), 3000);
+                    } finally {
+                      setIsSavingAllSheets(false);
+                    }
+                  }}
+                  className={`px-3 py-1.5 rounded-xl border text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${
+                    saveAllDone
+                      ? 'bg-emerald-50 border-emerald-300 text-emerald-700 dark:bg-emerald-950/60 dark:border-emerald-800 dark:text-emerald-300'
+                      : 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100 dark:bg-blue-950/50 dark:border-blue-800 dark:text-blue-300'
+                  }`}
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5" />
+                  <span>{saveAllDone ? 'Saved to DB!' : isSavingAllSheets ? 'Saving...' : 'Save Cost Sheets to DB'}</span>
+                </button>
+              )}
+              {canExportCostSheets && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!canExportCostSheets) return;
+                    const headers = [
+                      'Batch ID',
+                      'Order Number',
+                      'Product Name',
+                      'Model',
+                      'Good Qty',
+                      'Raw Material Cost',
+                      'Direct Labour',
+                      'Direct Overtime',
+                      'Factory Overhead',
+                      'Total Mfg Cost',
+                      'Actual Unit Cost',
+                    ];
+                    const rows = filteredBatches.map((b) => [
+                      b.batchNumber,
+                      b.orderNumber,
+                      b.productName,
+                      b.productSku,
+                      b.goodFinishedQty,
+                      b.rawMaterialCost,
+                      b.directLabourCost,
+                      b.directOvertimeCost || 0,
+                      b.electricityAllocation +
+                        b.factoryRentAllocation +
+                        b.generatorFuel +
+                        b.machineMaintenance +
+                        b.otherProductionExpenses,
+                      b.totalManufacturingCost,
+                      b.actualUnitProductionCost,
+                    ]);
+                    const csv = [headers, ...rows]
+                      .map((r) => r.map((c) => `"${String(c ?? '').replace(/"/g, '""')}"`).join(','))
+                      .join('\n');
+                    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `manufacturing-cost-sheets-${new Date().toISOString().slice(0, 10)}.csv`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                  }}
+                  className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shadow-2xs"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Export Cost Sheets</span>
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden">

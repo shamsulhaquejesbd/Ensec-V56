@@ -1439,3 +1439,60 @@ export function canViewTotalMaterialIssueValue(user: any): boolean {
   if (user.role === 'Super Admin') return true;
   return hasPageAction(user, 'manufacturing', 'view_total_material_issue_value');
 }
+
+export function canViewManufacturingCostDashboard(user: any): boolean {
+  if (!user) return false;
+  if (user.role === 'Super Admin') return true;
+  return hasPageAction(user, 'manufacturing-costing', 'view');
+}
+
+export function canPostFactoryExpense(user: any): boolean {
+  if (!user) return false;
+  if (user.role === 'Super Admin') return true;
+  return hasPageAction(user, 'manufacturing-costing', 'post_expense');
+}
+
+export function canApproveFactoryExpense(user: any): boolean {
+  if (!user) return false;
+  if (user.role === 'Super Admin') return true;
+  return hasPageAction(user, 'manufacturing-costing', 'approve_expense');
+}
+
+export function canAllocateManufacturingOverhead(user: any): boolean {
+  if (!user) return false;
+  if (user.role === 'Super Admin') return true;
+  return hasPageAction(user, 'manufacturing-costing', 'allocate_cost');
+}
+
+export function canRollbackCostAllocation(user: any): boolean {
+  if (!user) return false;
+  if (user.role === 'Super Admin') return true;
+  return hasPageAction(user, 'manufacturing-costing', 'rollback_allocation');
+}
+
+export function canSaveCostSheetToDB(user: any): boolean {
+  if (!user) return false;
+  if (user.role === 'Super Admin') return true;
+  return hasPageAction(user, 'manufacturing-costing', 'save_cost_sheet');
+}
+
+export function canExportManufacturingCostSheets(user: any): boolean {
+  if (!user) return false;
+  if (user.role === 'Super Admin') return true;
+  return hasPageAction(user, 'manufacturing-costing', 'export');
+}
+
+export function hasAnyManufacturingCostingAccess(user: any): boolean {
+  if (!user) return false;
+  if (user.role === 'Super Admin') return true;
+  return (
+    canViewManufacturingCostDashboard(user) ||
+    canPostFactoryExpense(user) ||
+    canApproveFactoryExpense(user) ||
+    canAllocateManufacturingOverhead(user) ||
+    canRollbackCostAllocation(user) ||
+    canSaveCostSheetToDB(user) ||
+    canExportManufacturingCostSheets(user)
+  );
+}
+

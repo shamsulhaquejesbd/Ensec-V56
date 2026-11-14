@@ -26,6 +26,12 @@ import {
   OTHER_BUSINESS_EXPENSE_SUBCATEGORIES 
 } from '../../mock/costingData';
 
+import {
+  canPostFactoryExpense,
+  canApproveFactoryExpense,
+  canAllocateManufacturingOverhead,
+} from '../../types/pagePermissions';
+
 interface ExpenseManagementTabProps {
   onAllocateExpense?: (expense: ExpenseEntry) => void;
 }
@@ -44,6 +50,10 @@ export const ExpenseManagementTab: React.FC<ExpenseManagementTabProps> = ({
     formatCurrency,
     currentUser
   } = useERP();
+
+  const canPostExpense = canPostFactoryExpense(currentUser);
+  const canApproveExpense = canApproveFactoryExpense(currentUser);
+  const canAllocateCost = canAllocateManufacturingOverhead(currentUser);
 
   // Helper to filter test or mock expense entries
   const isTestOrMockExpense = (e: any): boolean => {
@@ -172,6 +182,11 @@ CREATE POLICY "Allow public access" ON public.production_cost_allocations FOR AL
   const handleCreateExpense = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError('');
+
+    if (!canPostExpense) {
+      setFormError('Access Restricted: You do not have "Post Factory Expense" permission.');
+      return;
+    }
 
     if (!formAmount || Number(formAmount) <= 0) {
       setFormError('Please enter a valid expense amount greater than zero.');
@@ -426,15 +441,19 @@ CREATE POLICY "Allow public access" ON public.production_cost_allocations FOR AL
         </div>
 
         <div className="flex items-center gap-2">
-          
-
-          <button
-            onClick={() => setShowCreateModal(true)}
-            className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition"
-          >
-            <PlusCircle className="w-4 h-4" />
-            <span>Post New Expense Voucher</span>
-          </button>
+          {canPostExpense ? (
+            <button
+              onClick={() => setShowCreateModal(true)}
+              className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition cursor-pointer"
+            >
+              <PlusCircle className="w-4 h-4" />
+              <span>Post New Expense Voucher</span>
+            </button>
+          ) : (
+            <span className="px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-[11px] font-semibold border border-slate-200 dark:border-slate-700">
+              Read-Only (Post Expense Restricted)
+            </span>
+          )}
         </div>
       </div>
 
@@ -503,17 +522,28 @@ CREATE POLICY "Allow public access" ON public.production_cost_allocations FOR AL
                         {formatCurrency(expense.amount)}
                       </td>
                       <td className="p-3.5">
-                        <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
-                          expense.allocationStatus === 'Fully Allocated'
-                            ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
-                            : expense.allocationStatus === 'Partially Allocated'
-                            ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
-                            : expense.allocationStatus === 'Unallocated'
-                            ? 'bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300'
-                            : 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-400'
-                        }`}>
-                          {expense.allocationStatus}
-                        </span>
+                        <div className="flex flex-col items-start gap-1">
+                          <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                            expense.allocationStatus === 'Fully Allocated'
+                              ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
+                              : expense.allocationStatus === 'Partially Allocated'
+                              ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
+                              : expense.allocationStatus === 'Unallocated'
+                              ? 'bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300'
+                              : 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-400'
+                          }`}>
+                            {expense.allocationStatus}
+                          </span>
+                          <span className={`px-2 py-0.5 rounded-md text-[9px] font-bold border ${
+                            expense.approvalStatus === 'Approved'
+                              ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/60 dark:text-emerald-300 dark:border-emerald-800'
+                              : expense.approvalStatus === 'Rejected'
+                              ? 'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/60 dark:text-rose-300 dark:border-rose-800'
+                              : 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/60 dark:text-amber-300 dark:border-amber-800'
+                          }`}>
+                            {expense.approvalStatus || 'Approved'}
+                          </span>
+                        </div>
                         {isFactory && expense.allocatedAmount > 0 && (
                           <span className="block text-[10px] font-mono text-emerald-600 dark:text-emerald-400 mt-0.5">
                             ৳ {expense.allocatedAmount.toLocaleString()} allocated
@@ -533,30 +563,53 @@ CREATE POLICY "Allow public access" ON public.production_cost_allocations FOR AL
                         <div className="flex items-center justify-center gap-1.5">
                           <button
                             onClick={() => setViewVoucherModal(expense)}
-                            className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+                            className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
                             title="View Voucher & Accounting Entries"
                           >
                             <Eye className="w-3.5 h-3.5" />
                           </button>
 
-                          {isFactory && expense.remainingUnallocated > 0 && onAllocateExpense && (
+                          {canApproveExpense && expense.approvalStatus !== 'Approved' && (
                             <button
-                              onClick={() => onAllocateExpense(expense)}
-                              className="px-2 py-1 rounded-lg bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900 border border-blue-200 dark:border-blue-800 font-bold text-[10px] flex items-center gap-1 transition"
-                              title="Allocate this factory expense to production batches"
+                              type="button"
+                              onClick={() => {
+                                approveExpenseEntry(expense.id, currentUser?.name);
+                                setSyncNotice({ text: `Approved expense voucher ${expense.voucherNumber}.` });
+                                setTimeout(() => setSyncNotice(null), 3500);
+                              }}
+                              className="px-2 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900 border border-emerald-200 dark:border-emerald-800 font-bold text-[10px] flex items-center gap-1 transition cursor-pointer"
+                              title="Approve this expense voucher"
                             >
-                              <span>Allocate</span>
-                              <ArrowRight className="w-3 h-3" />
+                              <ShieldCheck className="w-3 h-3" />
+                              <span>Approve</span>
                             </button>
                           )}
 
-                          <button
-                            onClick={() => setExpenseToDelete(expense)}
-                            className="p-1.5 rounded-lg text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950 transition cursor-pointer"
-                            title="Delete Expense"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                          {isFactory &&
+                            expense.remainingUnallocated > 0 &&
+                            onAllocateExpense &&
+                            canAllocateCost &&
+                            expense.approvalStatus !== 'Pending Approval' &&
+                            expense.approvalStatus !== 'Rejected' && (
+                              <button
+                                onClick={() => onAllocateExpense(expense)}
+                                className="px-2 py-1 rounded-lg bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900 border border-blue-200 dark:border-blue-800 font-bold text-[10px] flex items-center gap-1 transition cursor-pointer"
+                                title="Allocate this factory expense to production batches"
+                              >
+                                <span>Allocate</span>
+                                <ArrowRight className="w-3 h-3" />
+                              </button>
+                            )}
+
+                          {canPostExpense && (
+                            <button
+                              onClick={() => setExpenseToDelete(expense)}
+                              className="p-1.5 rounded-lg text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950 transition cursor-pointer"
+                              title="Delete Expense"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -885,6 +938,21 @@ CREATE POLICY "Allow public access" ON public.production_cost_allocations FOR AL
                   <span className="text-[10px] text-slate-400 block uppercase">Disbursing Account</span>
                   <span className="text-slate-700 dark:text-slate-300">{viewVoucherModal.accountName || 'Cash / Bank'}</span>
                 </div>
+                <div>
+                  <span className="text-[10px] text-slate-400 block uppercase">Approval Status</span>
+                  <span className={`font-bold ${
+                    viewVoucherModal.approvalStatus === 'Approved'
+                      ? 'text-emerald-600 dark:text-emerald-400'
+                      : viewVoucherModal.approvalStatus === 'Rejected'
+                      ? 'text-rose-600 dark:text-rose-400'
+                      : 'text-amber-600 dark:text-amber-400'
+                  }`}>
+                    {viewVoucherModal.approvalStatus || 'Approved'}
+                  </span>
+                  {viewVoucherModal.approvedBy && (
+                    <span className="block text-[10px] text-slate-400">By: {viewVoucherModal.approvedBy}</span>
+                  )}
+                </div>
               </div>
 
               <div>
@@ -926,10 +994,25 @@ CREATE POLICY "Allow public access" ON public.production_cost_allocations FOR AL
               </div>
             </div>
 
-            <div className="flex items-center justify-end pt-3 border-t border-slate-200 dark:border-slate-800">
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-200 dark:border-slate-800">
+              {canApproveExpense && viewVoucherModal.approvalStatus !== 'Approved' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    approveExpenseEntry(viewVoucherModal.id, currentUser?.name);
+                    setSyncNotice({ text: `Approved expense voucher ${viewVoucherModal.voucherNumber}.` });
+                    setViewVoucherModal({ ...viewVoucherModal, approvalStatus: 'Approved', approvedBy: currentUser?.name || 'Authorized Approver' });
+                    setTimeout(() => setSyncNotice(null), 3500);
+                  }}
+                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer"
+                >
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                  <span>Approve Voucher</span>
+                </button>
+              )}
               <button
                 onClick={() => setViewVoucherModal(null)}
-                className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold text-xs hover:bg-slate-200"
+                className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold text-xs hover:bg-slate-200 cursor-pointer"
               >
                 Close
               </button>
@@ -989,7 +1072,7 @@ CREATE POLICY "Allow public access" ON public.production_cost_allocations FOR AL
                 type="button"
                 disabled={isDeleting}
                 onClick={async () => {
-                  if (!expenseToDelete) return;
+                  if (!expenseToDelete || !canPostExpense) return;
                   setIsDeleting(true);
                   try {
                     await deleteExpenseEntry(expenseToDelete.id);

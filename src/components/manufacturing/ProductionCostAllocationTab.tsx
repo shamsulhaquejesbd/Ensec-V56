@@ -15,6 +15,11 @@ import {
 } from 'lucide-react';
 import { ExpenseEntry, CostAllocationMethod, CostAllocationRecord } from '../../types/costing';
 
+import {
+  canAllocateManufacturingOverhead,
+  canRollbackCostAllocation,
+} from '../../types/pagePermissions';
+
 interface ProductionCostAllocationTabProps {
   initialSelectedExpense?: ExpenseEntry | null;
   preselectedExpenseId?: string;
@@ -27,6 +32,7 @@ export const ProductionCostAllocationTab: React.FC<ProductionCostAllocationTabPr
   onOpenCostSheet
 }) => {
   const { 
+    currentUser,
     expenseEntries, 
     costAllocations, 
     allocateExpenseToBatch, 
@@ -41,6 +47,9 @@ export const ProductionCostAllocationTab: React.FC<ProductionCostAllocationTabPr
     syncPendingExpensesToSupabase,
     syncPendingCostAllocationsToSupabase,
   } = useERP();
+
+  const canAllocateCost = canAllocateManufacturingOverhead(currentUser);
+  const canRollbackAllocation = canRollbackCostAllocation(currentUser);
 
   // Helper to filter test or mock costing data
   const isTestOrMockCostAllocation = (a: any): boolean => {
@@ -156,11 +165,24 @@ export const ProductionCostAllocationTab: React.FC<ProductionCostAllocationTabPr
     return productionOrders.find((po) => po.id === targetOrderId) || null;
   }, [productionOrders, targetOrderId]);
 
-  // Filter factory expenses with remaining unallocated balance
+  // Filter approved factory expenses with remaining unallocated balance
   const allocableFactoryExpenses = useMemo(() => {
     return cleanExpenseEntries.filter(
-      (e) => e.mainCategory === 'Factory Expenses' && e.remainingUnallocated > 0
+      (e) =>
+        e.mainCategory === 'Factory Expenses' &&
+        e.remainingUnallocated > 0 &&
+        e.approvalStatus !== 'Pending Approval' &&
+        e.approvalStatus !== 'Rejected'
     );
+  }, [cleanExpenseEntries]);
+
+  const pendingApprovalFactoryCount = useMemo(() => {
+    return cleanExpenseEntries.filter(
+      (e) =>
+        e.mainCategory === 'Factory Expenses' &&
+        e.remainingUnallocated > 0 &&
+        e.approvalStatus === 'Pending Approval'
+    ).length;
   }, [cleanExpenseEntries]);
 
   // Batch Summaries with Live Absorbed Production Costs
@@ -225,6 +247,11 @@ export const ProductionCostAllocationTab: React.FC<ProductionCostAllocationTabPr
     e.preventDefault();
     setErrorMessage('');
     setSuccessMessage('');
+
+    if (!canAllocateCost) {
+      setErrorMessage('Access Restricted: You do not have "Allocate Overheads" permission.');
+      return;
+    }
 
     if (!selectedExpense) {
       setErrorMessage('Please select an unallocated factory expense.');
@@ -447,6 +474,26 @@ CREATE POLICY "Allow public access" ON public.production_cost_allocations FOR AL
             </div>
           )}
 
+          {pendingApprovalFactoryCount > 0 && (
+            <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300 text-[11px] flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span>
+                {pendingApprovalFactoryCount} factory expense {pendingApprovalFactoryCount === 1 ? 'voucher awaits' : 'vouchers await'} approval before allocation.
+              </span>
+            </div>
+          )}
+
+          {!canAllocateCost ? (
+            <div className="p-5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 text-center space-y-2 text-xs">
+              <AlertCircle className="w-6 h-6 text-amber-500 mx-auto" />
+              <p className="font-bold text-slate-900 dark:text-white">
+                Allocate Overheads Permission Required
+              </p>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                Your account has read-only access to Cost Allocation. Contact the Super Admin to enable &quot;Allocate Overheads&quot; under Manufacturing Costing &amp; P&amp;L.
+              </p>
+            </div>
+          ) : (
           <form onSubmit={handleExecuteAllocation} className="space-y-4 text-xs">
             {/* 1. Select Factory Expense */}
             <div>
@@ -632,6 +679,7 @@ CREATE POLICY "Allow public access" ON public.production_cost_allocations FOR AL
               )}
             </button>
           </form>
+          )}
         </div>
 
         {/* Right: Allocation History & Audit Table */}
@@ -704,13 +752,15 @@ CREATE POLICY "Allow public access" ON public.production_cost_allocations FOR AL
                                 <span>Cost Sheet</span>
                               </button>
                             )}
-                            <button
-                              onClick={() => setAllocationToDelete(alloc)}
-                              className="p-1 rounded-lg text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950 transition cursor-pointer"
-                              title="Roll back allocation"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
+                            {canRollbackAllocation && (
+                              <button
+                                onClick={() => setAllocationToDelete(alloc)}
+                                className="p-1 rounded-lg text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950 transition cursor-pointer"
+                                title="Roll back allocation"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
                           </div>
                         </td>
                       </tr>
@@ -870,7 +920,7 @@ CREATE POLICY "Allow public access" ON public.production_cost_allocations FOR AL
                 type="button"
                 disabled={isDeleting}
                 onClick={async () => {
-                  if (!allocationToDelete) return;
+                  if (!allocationToDelete || !canRollbackAllocation) return;
                   setIsDeleting(true);
                   try {
                     await deleteCostAllocation(allocationToDelete.id);
