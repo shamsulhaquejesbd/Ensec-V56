@@ -12,6 +12,8 @@ export interface PageActionDef {
   description: string;
   isApprovalAction?: boolean;
   isDestructive?: boolean;
+  subsection?: string;
+  group?: string;
 }
 
 export interface ERPPageDef {
@@ -324,9 +326,9 @@ export const ERP_PAGE_PERMISSIONS_REGISTRY: ERPModuleCategory[] = [
       },
       {
         id: 'manufacturing',
-        name: 'Factory & BOM Operations',
+        name: 'Manufacturing Costing & BOM',
         category: 'Supply Chain & Factory',
-        description: 'Production orders, batch launches, FIFO material issue, BOM formulas, and FG receipt.',
+        description: 'Production orders, batch launches, FIFO material issue, BOM formulas, FG receipt, and cost visibility.',
         actions: [
           { key: 'view', label: 'View Production Batches', description: 'Can view factory production orders, statuses, and WIP' },
           { key: 'create_batch', label: 'Launch Production Batch', description: 'Can schedule new production batch for finished battery packs' },
@@ -336,6 +338,57 @@ export const ERP_PAGE_PERMISSIONS_REGISTRY: ERPModuleCategory[] = [
           { key: 'receive_fg', label: 'Receive Finished Goods', description: 'Can confirm batch completion and receive finished battery packs into FG inventory' },
           { key: 'update_bom', label: 'Update BOM Definition', description: 'Can modify standard Bill of Materials components and ratios' },
           { key: 'cancel_batch', label: 'Cancel Batch', description: 'Can cancel production orders and release reserved materials', isDestructive: true },
+          // Cost Visibility & Cost Sheet Permissions — A. Batches & Orders
+          {
+            key: 'view_raw_material_cost',
+            label: 'View Raw Material Cost',
+            description: 'Show the Raw Material Cost column and values in Factory Production Orders & Batches',
+            subsection: 'Cost Visibility & Cost Sheet Permissions',
+            group: 'A. Batches & Orders',
+          },
+          {
+            key: 'view_optimum_conversion',
+            label: 'View Optimum Conversion',
+            description: 'Show the Optimum Conversion column and conversion fee figures in Batches & Orders',
+            subsection: 'Cost Visibility & Cost Sheet Permissions',
+            group: 'A. Batches & Orders',
+          },
+          {
+            key: 'view_unit_cost_bdt',
+            label: 'View Unit Cost BDT',
+            description: 'Show the Unit Cost BDT column and per-unit cost values in Factory Production Orders & Batches',
+            subsection: 'Cost Visibility & Cost Sheet Permissions',
+            group: 'A. Batches & Orders',
+          },
+          {
+            key: 'view_cost_sheet',
+            label: 'View Cost Sheet',
+            description: 'Show the Cost Sheet button in Actions column and authorize Cost Sheet URL/API access',
+            subsection: 'Cost Visibility & Cost Sheet Permissions',
+            group: 'A. Batches & Orders',
+          },
+          // Cost Visibility & Cost Sheet Permissions — B. Issue Raw Materials
+          {
+            key: 'view_batch_rate',
+            label: 'View Batch Rate',
+            description: 'Show Batch Rate column and unit rates inside the Issue Raw Materials interface',
+            subsection: 'Cost Visibility & Cost Sheet Permissions',
+            group: 'B. Issue Raw Materials',
+          },
+          {
+            key: 'view_total_cost',
+            label: 'View Total Cost',
+            description: 'Show Total Cost column and line item cost values inside the Issue Raw Materials interface',
+            subsection: 'Cost Visibility & Cost Sheet Permissions',
+            group: 'B. Issue Raw Materials',
+          },
+          {
+            key: 'view_total_material_issue_value',
+            label: 'View Total Material Issue Value',
+            description: 'Show Total Material Issue Value summary section inside the Issue Raw Materials interface',
+            subsection: 'Cost Visibility & Cost Sheet Permissions',
+            group: 'B. Issue Raw Materials',
+          },
         ],
       },
       {
@@ -1045,8 +1098,21 @@ export const PERMISSION_TEMPLATES: PermissionTemplate[] = [
 
         page.actions.forEach((act) => {
           if (isFactory) {
-            // Factory Users must NOT be able to see purchase rates or stock values
-            if (page.id === 'raw-material-inventory' && ['view_raw_material_stock_value', 'view_raw_material_purchase_rate', 'view_batch_stock_value'].includes(act.key)) {
+            // Factory Users must NOT be able to see purchase rates, cost sheets, or stock values by default
+            if (
+              (page.id === 'raw-material-inventory' &&
+                ['view_raw_material_stock_value', 'view_raw_material_purchase_rate', 'view_batch_stock_value'].includes(act.key)) ||
+              (page.id === 'manufacturing' &&
+                [
+                  'view_raw_material_cost',
+                  'view_optimum_conversion',
+                  'view_unit_cost_bdt',
+                  'view_cost_sheet',
+                  'view_batch_rate',
+                  'view_total_cost',
+                  'view_total_material_issue_value',
+                ].includes(act.key))
+            ) {
               map[page.id][act.key] = false;
             } else {
               map[page.id][act.key] = true;
@@ -1094,7 +1160,22 @@ export const PERMISSION_TEMPLATES: PermissionTemplate[] = [
       ALL_ERP_PAGES.forEach((page) => {
         map[page.id] = {};
         page.actions.forEach((act) => {
-          if (act.key === 'view' || act.key === 'view_raw_material_stock_value' || act.key === 'view_raw_material_purchase_rate' || act.key === 'view_batch_stock_value' || act.key === 'view_valuation' || act.key === 'view_revenue' || act.key === 'export') {
+          if (
+            act.key === 'view' ||
+            act.key === 'view_raw_material_stock_value' ||
+            act.key === 'view_raw_material_purchase_rate' ||
+            act.key === 'view_batch_stock_value' ||
+            act.key === 'view_raw_material_cost' ||
+            act.key === 'view_optimum_conversion' ||
+            act.key === 'view_unit_cost_bdt' ||
+            act.key === 'view_cost_sheet' ||
+            act.key === 'view_batch_rate' ||
+            act.key === 'view_total_cost' ||
+            act.key === 'view_total_material_issue_value' ||
+            act.key === 'view_valuation' ||
+            act.key === 'view_revenue' ||
+            act.key === 'export'
+          ) {
             map[page.id][act.key] = true;
           } else {
             map[page.id][act.key] = false;
@@ -1315,4 +1396,46 @@ export function canViewBatchStockValue(user: any): boolean {
   if (!user) return false;
   if (user.role === 'Super Admin') return true;
   return hasPageAction(user, 'raw-material-inventory', 'view_batch_stock_value');
+}
+
+export function canViewManufacturingRawMaterialCost(user: any): boolean {
+  if (!user) return false;
+  if (user.role === 'Super Admin') return true;
+  return hasPageAction(user, 'manufacturing', 'view_raw_material_cost');
+}
+
+export function canViewManufacturingOptimumConversion(user: any): boolean {
+  if (!user) return false;
+  if (user.role === 'Super Admin') return true;
+  return hasPageAction(user, 'manufacturing', 'view_optimum_conversion');
+}
+
+export function canViewManufacturingUnitCost(user: any): boolean {
+  if (!user) return false;
+  if (user.role === 'Super Admin') return true;
+  return hasPageAction(user, 'manufacturing', 'view_unit_cost_bdt');
+}
+
+export function canViewManufacturingCostSheet(user: any): boolean {
+  if (!user) return false;
+  if (user.role === 'Super Admin') return true;
+  return hasPageAction(user, 'manufacturing', 'view_cost_sheet');
+}
+
+export function canViewIssueBatchRate(user: any): boolean {
+  if (!user) return false;
+  if (user.role === 'Super Admin') return true;
+  return hasPageAction(user, 'manufacturing', 'view_batch_rate');
+}
+
+export function canViewIssueTotalCost(user: any): boolean {
+  if (!user) return false;
+  if (user.role === 'Super Admin') return true;
+  return hasPageAction(user, 'manufacturing', 'view_total_cost');
+}
+
+export function canViewTotalMaterialIssueValue(user: any): boolean {
+  if (!user) return false;
+  if (user.role === 'Super Admin') return true;
+  return hasPageAction(user, 'manufacturing', 'view_total_material_issue_value');
 }

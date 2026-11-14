@@ -6,15 +6,17 @@
  * Implements Section 5 of the Manufacturing Cost Accounting Specification.
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useERP } from '../../context/ERPContext';
 import { 
   Calculator, Layers, CheckCircle2, X, Printer, Download, 
   TrendingUp, AlertTriangle, ArrowRight, DollarSign, Cpu, FileSpreadsheet,
-  Building, Calendar, Clock, PackageCheck, BookOpen, ShieldCheck, Tag, Loader2, Lock
+  Building, Calendar, Clock, PackageCheck, BookOpen, ShieldCheck, ShieldAlert, Tag, Loader2, Lock
 } from 'lucide-react';
 import { ProductionOrder, ProductionCostRecord } from '../../types/erp';
 import { ProductionCostDetailedRecord } from '../../types/costing';
+import { canViewManufacturingCostSheet } from '../../types/pagePermissions';
+import { getManufacturingAuthHeaders } from '../../lib/manufacturingPermissions';
 
 interface ProductionCostSheetModalProps {
   order: ProductionOrder;
@@ -50,11 +52,79 @@ export const ProductionCostSheetModal: React.FC<ProductionCostSheetModalProps> =
   const [isReceiving, setIsReceiving] = useState(false);
   const [receiveError, setReceiveError] = useState<string | null>(null);
   const [showReceiveConfirmModal, setShowReceiveConfirmModal] = useState(false);
+  const [serverDeniedReason, setServerDeniedReason] = useState<string | null>(null);
 
-  // Compute granular production cost breakdown
+  const hasCostSheetPermission = canViewManufacturingCostSheet(currentUser);
+
+  // Enforce backend/API authorization when opening Cost Sheet
+  useEffect(() => {
+    if (!hasCostSheetPermission) {
+      setServerDeniedReason(
+        'Access Restricted: Your account does not have "View Cost Sheet" permission under Manufacturing Costing & BOM.'
+      );
+      return;
+    }
+
+    let cancelled = false;
+    fetch(`/api/manufacturing/cost-sheet/${encodeURIComponent(order.id || order.orderNumber || order.batchNumber)}`, {
+      headers: {
+        ...getManufacturingAuthHeaders(currentUser),
+      },
+    })
+      .then(async (res) => {
+        if (cancelled) return;
+        if (res.status === 403) {
+          const data = await res.json().catch(() => ({}));
+          setServerDeniedReason(
+            data?.error || 'Forbidden: You do not have permission to view this Production Cost Sheet.'
+          );
+        } else {
+          setServerDeniedReason(null);
+        }
+      })
+      .catch(() => {
+        // Keep frontend check authoritative if server fetch fails
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [hasCostSheetPermission, order.id, order.orderNumber, order.batchNumber, currentUser?.id, currentUser?.role]);
+
+  // Compute granular production cost breakdown ONLY when authorized
   const detailedRecord: ProductionCostDetailedRecord = useMemo(() => {
+    if (!hasCostSheetPermission || serverDeniedReason) {
+      return {
+        productionOrderId: String(order.id || ''),
+        orderNumber: String(order.orderNumber || ''),
+        batchNumber: String(order.batchNumber || ''),
+        productId: String(order.productId || ''),
+        productName: String(order.productName || ''),
+        productSku: String(order.model || ''),
+        productionDate: String(order.date || ''),
+        factoryLocation: 'Kushtia Manufacturing Plant',
+        plannedQty: Number(order.plannedQty || 0),
+        actualProductionQty: Number(order.completedQty || 0),
+        goodFinishedQty: Number(order.completedQty || order.plannedQty || 0),
+        rejectedQty: 0,
+        rawMaterialBatches: [],
+        rawMaterialCost: 0,
+        directLabourCost: 0,
+        directOvertimeCost: 0,
+        electricityAllocation: 0,
+        factoryRentAllocation: 0,
+        generatorFuel: 0,
+        machineMaintenance: 0,
+        packagingCost: 0,
+        otherProductionExpenses: 0,
+        totalManufacturingCost: 0,
+        actualUnitProductionCost: 0,
+        calculatedAt: new Date().toISOString(),
+        journalEntries: [],
+      } as unknown as ProductionCostDetailedRecord;
+    }
     return getProductionCostBreakdown(order.id, valuationMethod);
-  }, [order.id, valuationMethod, productionConsumptions, costAllocations]);
+  }, [hasCostSheetPermission, serverDeniedReason, order.id, valuationMethod, productionConsumptions, costAllocations]);
 
   // Live order from ERP context (to reflect updates reactively)
   const currentOrder = useMemo(() => {
@@ -166,6 +236,34 @@ export const ProductionCostSheetModal: React.FC<ProductionCostSheetModalProps> =
       setIsReceiving(false);
     }
   };
+
+  if (!hasCostSheetPermission || serverDeniedReason) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
+        <div className="relative w-full max-w-md bg-white dark:bg-slate-900 border border-rose-200 dark:border-rose-900 rounded-2xl shadow-2xl p-6 text-center space-y-4">
+          <div className="w-12 h-12 mx-auto rounded-2xl bg-rose-100 dark:bg-rose-950 text-rose-600 dark:text-rose-400 flex items-center justify-center">
+            <ShieldAlert className="w-6 h-6" />
+          </div>
+          <h3 className="text-base font-bold text-slate-900 dark:text-white">
+            Cost Sheet Access Restricted
+          </h3>
+          <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
+            {serverDeniedReason ||
+              'You do not have "View Cost Sheet" permission under Manufacturing Costing & BOM.'}
+          </p>
+          <div className="pt-2 flex justify-center">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-5 py-2 rounded-xl bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 text-xs font-bold hover:opacity-90 transition cursor-pointer"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs overflow-y-auto">

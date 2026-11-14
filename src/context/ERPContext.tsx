@@ -5776,6 +5776,38 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   useEffect(() => {
+    if (typeof window === 'undefined' || typeof fetch === 'undefined') return;
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      fetch('/api/manufacturing/sync-state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          users: users.map((u) => ({
+            id: u.id,
+            userId: u.userId,
+            name: u.name,
+            email: u.email,
+            role: u.role,
+            department: u.department,
+            status: u.status,
+            permissions: u.permissions,
+          })),
+          productionOrders,
+          materialIssues,
+          rawMaterials,
+          inventoryBatches,
+        }),
+        signal: controller.signal,
+      }).catch(() => {});
+    }, 150);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [users, productionOrders, materialIssues, rawMaterials, inventoryBatches]);
+
+  useEffect(() => {
     // Purge test data Telecom Energy Storage and normalize any remnant products
     setCategories((prev) => prev.filter((c) => (c.name || '').trim().toLowerCase() !== 'telecom energy storage'));
     setProducts((prev) =>
@@ -16407,6 +16439,22 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setUsers(updatedUsers);
     if (typeof window !== 'undefined') {
       localStorage.setItem('ensec_erp_users', JSON.stringify(updatedUsers));
+      fetch('/api/manufacturing/sync-state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          users: updatedUsers.map((u) => ({
+            id: u.id,
+            userId: u.userId,
+            name: u.name,
+            email: u.email,
+            role: u.role,
+            department: u.department,
+            status: u.status,
+            permissions: u.permissions,
+          })),
+        }),
+      }).catch(() => {});
     }
 
     addAuditLog(

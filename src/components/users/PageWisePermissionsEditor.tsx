@@ -331,7 +331,11 @@ export const PageWisePermissionsEditor: React.FC<PageWisePermissionsEditorProps>
     ALL_ERP_PAGES.forEach((page) => {
       resetMap[page.id] = {};
       page.actions.forEach((act) => {
-        resetMap[page.id][act.key] = Boolean(existingMap[page.id]?.[act.key]);
+        if (existingMap[page.id] && existingMap[page.id][act.key] !== undefined) {
+          resetMap[page.id][act.key] = Boolean(existingMap[page.id][act.key]);
+        } else {
+          resetMap[page.id][act.key] = selectedUser.role === 'Super Admin';
+        }
       });
     });
     setWorkingPermissions(resetMap);
@@ -857,9 +861,9 @@ export const PageWisePermissionsEditor: React.FC<PageWisePermissionsEditorProps>
                               </div>
                             </div>
 
-                            {/* Actions Checkbox Grid */}
+                            {/* Standard Actions Checkbox Grid */}
                             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 pt-1">
-                                {page.actions.map((act) => {
+                                {page.actions.filter((act) => !act.subsection).map((act) => {
                                   const isGranted = Boolean(pagePerms[act.key]);
                                   const isViewAction = act.key === 'view';
                                   const isApproval = Boolean(act.isApprovalAction);
@@ -930,6 +934,125 @@ export const PageWisePermissionsEditor: React.FC<PageWisePermissionsEditorProps>
                                   );
                                 })}
                             </div>
+
+                            {/* Dedicated Subsections (e.g., Cost Visibility & Cost Sheet Permissions) */}
+                            {(() => {
+                              const subsectionActions = page.actions.filter((act) => Boolean(act.subsection));
+                              if (subsectionActions.length === 0) return null;
+
+                              const subsectionTitles = Array.from(
+                                new Set(subsectionActions.map((act) => act.subsection as string))
+                              );
+
+                              return subsectionTitles.map((subTitle) => {
+                                const actionsInSub = subsectionActions.filter((a) => a.subsection === subTitle);
+                                const groups = Array.from(
+                                  new Set(actionsInSub.map((a) => a.group || 'General'))
+                                );
+
+                                return (
+                                  <div
+                                    key={subTitle}
+                                    className="mt-3 p-3.5 rounded-xl border border-amber-200/90 dark:border-amber-800/70 bg-amber-50/40 dark:bg-amber-950/15 space-y-3"
+                                  >
+                                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-amber-200/70 dark:border-amber-800/50">
+                                      <div className="flex items-center gap-2">
+                                        <span className="inline-flex items-center justify-center w-6 h-6 rounded-lg bg-amber-100 dark:bg-amber-900/60 text-amber-700 dark:text-amber-300">
+                                          <Sliders className="w-3.5 h-3.5" />
+                                        </span>
+                                        <div>
+                                          <h6 className="text-xs font-extrabold text-slate-900 dark:text-white tracking-tight">
+                                            {subTitle}
+                                          </h6>
+                                          <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                                            Independent ON/OFF cost visibility &amp; Cost Sheet controls. Off options are enforced across UI, URLs, and API responses.
+                                          </p>
+                                        </div>
+                                      </div>
+                                      <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/50 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800 self-start sm:self-center">
+                                        {actionsInSub.filter((a) => pagePerms[a.key]).length} / {actionsInSub.length} Enabled
+                                      </span>
+                                    </div>
+
+                                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                                      {groups.map((grp) => {
+                                        const grpActions = actionsInSub.filter(
+                                          (a) => (a.group || 'General') === grp
+                                        );
+                                        return (
+                                          <div
+                                            key={grp}
+                                            className="p-3 rounded-xl bg-white dark:bg-slate-900/90 border border-slate-200 dark:border-slate-800 space-y-2"
+                                          >
+                                            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 pb-1 border-b border-slate-100 dark:border-slate-800">
+                                              {grp}
+                                            </div>
+                                            <div className="space-y-2">
+                                              {grpActions.map((act) => {
+                                                const isGranted = Boolean(pagePerms[act.key]);
+                                                return (
+                                                  <div
+                                                    key={act.key}
+                                                    onClick={() => handleToggleAction(page.id, act.key)}
+                                                    className={`flex items-center justify-between gap-3 p-2.5 rounded-xl border transition-all cursor-pointer select-none ${
+                                                      isGranted
+                                                        ? 'bg-amber-50/80 dark:bg-amber-950/30 border-amber-300 dark:border-amber-800 shadow-2xs'
+                                                        : 'bg-slate-50/70 dark:bg-slate-800/40 border-slate-200 dark:border-slate-700/70 hover:bg-slate-100/80 dark:hover:bg-slate-800'
+                                                    }`}
+                                                  >
+                                                    <div className="min-w-0 flex-1">
+                                                      <div className="flex items-center gap-1.5">
+                                                        <span
+                                                          className={`text-xs font-bold ${
+                                                            isGranted
+                                                              ? 'text-amber-950 dark:text-amber-200'
+                                                              : 'text-slate-700 dark:text-slate-300'
+                                                          }`}
+                                                        >
+                                                          {act.label}
+                                                        </span>
+                                                        <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-300">
+                                                          {isGranted ? 'ON' : 'OFF'}
+                                                        </span>
+                                                      </div>
+                                                      <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-tight mt-0.5">
+                                                        {act.description}
+                                                      </p>
+                                                    </div>
+
+                                                    <button
+                                                      type="button"
+                                                      role="switch"
+                                                      aria-checked={isGranted}
+                                                      aria-label={act.label}
+                                                      onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        handleToggleAction(page.id, act.key);
+                                                      }}
+                                                      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors cursor-pointer focus:outline-hidden focus:ring-2 focus:ring-amber-500 ${
+                                                        isGranted
+                                                          ? 'bg-emerald-600'
+                                                          : 'bg-slate-300 dark:bg-slate-600'
+                                                      }`}
+                                                    >
+                                                      <span
+                                                        className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-xs transition-transform ${
+                                                          isGranted ? 'translate-x-4.5' : 'translate-x-1'
+                                                        }`}
+                                                      />
+                                                    </button>
+                                                  </div>
+                                                );
+                                              })}
+                                            </div>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                );
+                              });
+                            })()}
                           </div>
                         );
                       })}

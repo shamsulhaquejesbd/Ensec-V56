@@ -750,13 +750,13 @@ CREATE POLICY "Allow public access" ON public.production_cost_allocations FOR AL
                 <th className="p-3 text-right">Allocated Overhead</th>
                 <th className="p-3 text-right">Total Production Cost</th>
                 <th className="p-3 text-right">Unit Cost</th>
-                <th className="p-3 text-center">Cost Sheet</th>
+                {onOpenCostSheet && <th className="p-3 text-center">Cost Sheet</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-medium">
               {batchSummaries.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="p-8 text-center text-slate-400 text-xs">
+                  <td colSpan={onOpenCostSheet ? 9 : 8} className="p-8 text-center text-slate-400 text-xs">
                     No production batches found. Create a production order and issue raw materials to inspect batch costs.
                   </td>
                 </tr>
@@ -794,8 +794,8 @@ CREATE POLICY "Allow public access" ON public.production_cost_allocations FOR AL
                     <td className="p-3 text-right font-mono font-black text-indigo-600 dark:text-indigo-400 text-xs">
                       {formatCurrency(b.unitCost)}
                     </td>
-                    <td className="p-3 text-center">
-                      {onOpenCostSheet && (
+                    {onOpenCostSheet && (
+                      <td className="p-3 text-center">
                         <button
                           type="button"
                           onClick={() => onOpenCostSheet(b.batchNumber || b.orderNumber)}
@@ -805,8 +805,8 @@ CREATE POLICY "Allow public access" ON public.production_cost_allocations FOR AL
                           <Calculator className="w-3.5 h-3.5 text-indigo-600" />
                           <span>Cost Sheet</span>
                         </button>
-                      )}
-                    </td>
+                      </td>
+                    )}
                   </tr>
                 ))
               )}

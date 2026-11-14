@@ -621,13 +621,13 @@ export const ProductionCostDashboardTab: React.FC<ProductionCostDashboardTabProp
                 <th className="p-3 text-right">Factory Overhead</th>
                 <th className="p-3 text-right">Total Mfg Cost</th>
                 <th className="p-3 text-right">Actual Unit Cost</th>
-                <th className="p-3 text-center">Action</th>
+                {onOpenCostSheet && <th className="p-3 text-center">Action</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-medium">
               {filteredBatches.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="p-8 text-center text-slate-400 text-xs">
+                  <td colSpan={onOpenCostSheet ? 10 : 9} className="p-8 text-center text-slate-400 text-xs">
                     No production batch cost sheets found. Create production orders and allocate expenses to view batch cost sheets.
                   </td>
                 </tr>
@@ -669,8 +669,8 @@ export const ProductionCostDashboardTab: React.FC<ProductionCostDashboardTabProp
                   <td className="p-3 text-right font-mono font-black text-indigo-600 dark:text-indigo-400 text-xs">
                     {formatCurrency(b.actualUnitProductionCost)}
                   </td>
-                  <td className="p-3 text-center">
-                    {onOpenCostSheet && (
+                  {onOpenCostSheet && (
+                    <td className="p-3 text-center">
                       <button
                         onClick={() => onOpenCostSheet(b.productionOrderId)}
                         className="px-3 py-1.5 rounded-lg bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 hover:bg-blue-100 font-bold text-xs flex items-center gap-1 mx-auto transition"
@@ -678,8 +678,8 @@ export const ProductionCostDashboardTab: React.FC<ProductionCostDashboardTabProp
                         <span>Cost Sheet</span>
                         <ChevronRight className="w-3.5 h-3.5" />
                       </button>
-                    )}
-                  </td>
+                    </td>
+                  )}
                 </tr>
               )))}
             </tbody>

@@ -49,6 +49,8 @@ import { RawMaterialReceivePage } from './components/inventory/RawMaterialReceiv
 import { RawMaterialInventoryPage } from './components/inventory/RawMaterialInventoryPage.tsx';
 import { WarrantyManagementModule } from './components/warranty/WarrantyManagementModule.tsx';
 import { LoginPage } from './components/auth/LoginPage.tsx';
+import { ProductionCostSheetModal } from './components/manufacturing/ProductionCostSheetModal.tsx';
+import { canViewManufacturingCostSheet } from './types/pagePermissions.ts';
 import { ShieldAlert, ArrowLeft, Menu } from 'lucide-react';
 
 // Maps incoming browser URL pathname -> ERP activeModule ID
@@ -57,6 +59,19 @@ export function pathnameToModule(pathname: string): string {
 
   if (!clean || clean === 'dashboard' || clean === 'login') {
     return 'dashboard';
+  }
+
+  if (
+    clean === 'cost-sheet' ||
+    clean.startsWith('cost-sheet/') ||
+    clean === 'manufacturing-cost-sheet' ||
+    clean.startsWith('manufacturing-cost-sheet/') ||
+    clean === 'manufacturing/cost-sheet' ||
+    clean.startsWith('manufacturing/cost-sheet/') ||
+    clean === 'production/cost-sheet' ||
+    clean.startsWith('production/cost-sheet/')
+  ) {
+    return 'manufacturing-cost-sheet';
   }
 
   const ALIAS_MAP: Record<string, string> = {
@@ -160,7 +175,7 @@ export function moduleToPathname(module: string): string {
 }
 
 function MainApp() {
-  const { currentUser, currentUserHasPermission, isAuthenticated } = useERP();
+  const { currentUser, currentUserHasPermission, isAuthenticated, productionOrders } = useERP();
 
   // Initialize activeModule from current browser pathname so F5 refresh preserves route!
   const [activeModule, setActiveModule] = useState<string>(() => {
@@ -242,7 +257,9 @@ function MainApp() {
 
   const isModulePermitted =
     currentUser.role === 'Super Admin' ||
-    currentUserHasPermission(activeModule);
+    (activeModule === 'manufacturing-cost-sheet'
+      ? canViewManufacturingCostSheet(currentUser)
+      : currentUserHasPermission(activeModule));
 
   const isMobilePortal = activeModule === 'mobile-field';
 
@@ -373,6 +390,55 @@ function MainApp() {
               {activeModule === 'manufacturing' && (
                 <ManufacturingModule initialTab="orders" onNavigate={(mod) => navigateTo(mod)} />
               )}
+              {activeModule === 'manufacturing-cost-sheet' && canViewManufacturingCostSheet(currentUser) && (() => {
+                const pathParts = typeof window !== 'undefined'
+                  ? window.location.pathname.replace(/^\/+|\/+$/g, '').split('/')
+                  : [];
+                const queryParams = typeof window !== 'undefined'
+                  ? new URLSearchParams(window.location.search)
+                  : new URLSearchParams();
+                const lastSegment = pathParts[pathParts.length - 1];
+                const urlOrderKey =
+                  queryParams.get('orderId') ||
+                  queryParams.get('order') ||
+                  queryParams.get('batch') ||
+                  (lastSegment && !['cost-sheet', 'manufacturing-cost-sheet'].includes(lastSegment.toLowerCase())
+                    ? decodeURIComponent(lastSegment)
+                    : '');
+                const matchedOrder =
+                  (urlOrderKey
+                    ? productionOrders.find(
+                        (po) =>
+                          String(po.id).toLowerCase() === urlOrderKey.toLowerCase() ||
+                          String(po.orderNumber || '').toLowerCase() === urlOrderKey.toLowerCase() ||
+                          String(po.batchNumber || '').toLowerCase() === urlOrderKey.toLowerCase()
+                      )
+                    : productionOrders[0]) || productionOrders[0];
+
+                if (!matchedOrder) {
+                  return (
+                    <div className="p-6 max-w-lg mx-auto mt-10 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 text-center space-y-3">
+                      <p className="text-sm font-bold text-slate-900 dark:text-white">
+                        No Production Order Found for Cost Sheet
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => navigateTo('manufacturing')}
+                        className="px-4 py-2 rounded-xl bg-blue-600 text-white text-xs font-semibold cursor-pointer"
+                      >
+                        Go to Manufacturing Costing &amp; BOM
+                      </button>
+                    </div>
+                  );
+                }
+
+                return (
+                  <ProductionCostSheetModal
+                    order={matchedOrder}
+                    onClose={() => navigateTo('manufacturing')}
+                  />
+                );
+              })()}
               {activeModule === 'manufacturing-costing' && (
                 <ManufacturingModule initialTab="cost-dashboard" onNavigate={(mod) => navigateTo(mod)} />
               )}

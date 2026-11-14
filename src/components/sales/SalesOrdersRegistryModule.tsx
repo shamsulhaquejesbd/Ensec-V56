@@ -42,6 +42,7 @@ import { DeliveryOrderModal } from './DeliveryOrderModal.tsx';
 import { ChallanModal } from './ChallanModal.tsx';
 import { CustomerReceiptModal } from './CustomerReceiptModal.tsx';
 import { ProductionCostSheetModal } from '../manufacturing/ProductionCostSheetModal.tsx';
+import { canViewManufacturingCostSheet } from '../../types/pagePermissions.ts';
 
 interface SalesOrdersRegistryModuleProps {
   onNavigateToCreateOrder?: () => void;
@@ -53,6 +54,7 @@ export const SalesOrdersRegistryModule: React.FC<SalesOrdersRegistryModuleProps>
   onNavigateToCreateOrder,
 }) => {
   const {
+    currentUser,
     salesOrders,
     updateSalesOrder,
     approveSalesOrder,
@@ -68,6 +70,7 @@ export const SalesOrdersRegistryModule: React.FC<SalesOrdersRegistryModuleProps>
     refreshSalesOrders,
     productionOrders,
   } = useERP();
+  const canViewCostSheet = canViewManufacturingCostSheet(currentUser);
 
   // ---------------------------------------------------------------------------
   // FILTER STATES
@@ -1737,15 +1740,17 @@ export const SalesOrdersRegistryModule: React.FC<SalesOrdersRegistryModuleProps>
                             <span className="font-mono text-[10px] text-purple-600 dark:text-purple-400 block font-bold">
                               {item.batchNumber || 'BT-202610-001'}
                             </span>
-                            <button
-                              type="button"
-                              onClick={() => setSelectedBatchForCostSheet(item.batchNumber || 'BT-202610-001')}
-                              className="mt-0.5 inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 text-indigo-700 font-bold text-[9px] cursor-pointer transition shadow-2xs"
-                              title="View batch official manufacturing cost sheet"
-                            >
-                              <Calculator className="w-2.5 h-2.5 text-indigo-600" />
-                              <span>Cost Sheet</span>
-                            </button>
+                            {canViewCostSheet && (
+                              <button
+                                type="button"
+                                onClick={() => setSelectedBatchForCostSheet(item.batchNumber || 'BT-202610-001')}
+                                className="mt-0.5 inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 text-indigo-700 font-bold text-[9px] cursor-pointer transition shadow-2xs"
+                                title="View batch official manufacturing cost sheet"
+                              >
+                                <Calculator className="w-2.5 h-2.5 text-indigo-600" />
+                                <span>Cost Sheet</span>
+                              </button>
+                            )}
                           </td>
 
                           <td className="p-3 text-center font-mono font-bold text-slate-900 dark:text-white">
@@ -3022,7 +3027,7 @@ export const SalesOrdersRegistryModule: React.FC<SalesOrdersRegistryModuleProps>
       {/* ===================================================================== */}
       {/* MODAL: BATCH-WISE PRODUCTION COST SHEET                                */}
       {/* ===================================================================== */}
-      {selectedBatchForCostSheet && matchingProductionOrder && (
+      {selectedBatchForCostSheet && matchingProductionOrder && canViewCostSheet && (
         <ProductionCostSheetModal
           order={matchingProductionOrder}
           onClose={() => setSelectedBatchForCostSheet(null)}

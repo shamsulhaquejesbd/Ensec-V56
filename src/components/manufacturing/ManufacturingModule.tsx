@@ -36,6 +36,12 @@ import { ExpenseManagementTab } from './ExpenseManagementTab.tsx';
 import { ProductionCostAllocationTab } from './ProductionCostAllocationTab.tsx';
 import { ProductionCostDashboardTab } from './ProductionCostDashboardTab.tsx';
 import { ExpenseEntry } from '../../types/costing.ts';
+import {
+  canViewManufacturingRawMaterialCost,
+  canViewManufacturingOptimumConversion,
+  canViewManufacturingUnitCost,
+  canViewManufacturingCostSheet,
+} from '../../types/pagePermissions.ts';
 
 export type ManufacturingTab = 'orders' | 'cost-dashboard' | 'expenses' | 'allocations' | 'bom';
 
@@ -46,6 +52,7 @@ interface ManufacturingModuleProps {
 
 export const ManufacturingModule: React.FC<ManufacturingModuleProps> = ({ initialTab = 'orders', onNavigate }) => {
   const {
+    currentUser,
     products,
     productionOrders,
     rawMaterials,
@@ -67,6 +74,13 @@ export const ManufacturingModule: React.FC<ManufacturingModuleProps> = ({ initia
     refreshExpenseEntries,
     refreshProductionCosts,
   } = useERP();
+
+  const canViewRawMaterialCost = canViewManufacturingRawMaterialCost(currentUser);
+  const canViewOptimumConversion = canViewManufacturingOptimumConversion(currentUser);
+  const canViewUnitCostBdt = canViewManufacturingUnitCost(currentUser);
+  const canViewCostSheet = canViewManufacturingCostSheet(currentUser);
+  const ordersTableColSpan =
+    6 + (canViewRawMaterialCost ? 1 : 0) + (canViewOptimumConversion ? 1 : 0) + (canViewUnitCostBdt ? 1 : 0);
 
   const [activeTab, setActiveTab] = useState<ManufacturingTab>(initialTab);
   const [selectedExpenseForAllocation, setSelectedExpenseForAllocation] = useState<ExpenseEntry | null>(null);
@@ -321,7 +335,7 @@ export const ManufacturingModule: React.FC<ManufacturingModuleProps> = ({ initia
       {activeTab === 'orders' ? (
         <div className="space-y-6">
           {/* Plant KPIs */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className={`grid grid-cols-1 sm:grid-cols-2 ${canViewOptimumConversion ? 'lg:grid-cols-4' : 'lg:grid-cols-3'} gap-4`}>
             <div className="p-4 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
               <div className="text-xs font-semibold text-slate-500 uppercase">Active Kushtia Batches</div>
               <div className="text-lg font-black text-purple-600 dark:text-purple-400 mt-1">
@@ -338,13 +352,14 @@ export const ManufacturingModule: React.FC<ManufacturingModuleProps> = ({ initia
               
             </div>
 
-            <div className="p-4 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
-              <div className="text-xs font-semibold text-slate-500 uppercase">Total Optimum Conversion Fees</div>
-              <div className="text-lg font-black text-slate-900 dark:text-white mt-1 font-mono">
-                ৳ {productionOrders.reduce((sum, p) => sum + p.conversionCostBDT, 0).toLocaleString()}
+            {canViewOptimumConversion && (
+              <div className="p-4 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+                <div className="text-xs font-semibold text-slate-500 uppercase">Total Optimum Conversion Fees</div>
+                <div className="text-lg font-black text-slate-900 dark:text-white mt-1 font-mono">
+                  ৳ {productionOrders.reduce((sum, p) => sum + p.conversionCostBDT, 0).toLocaleString()}
+                </div>
               </div>
-             
-            </div>
+            )}
 
             <div className="p-4 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
               <div className="text-xs font-semibold text-slate-500 uppercase">Average Scrap / Wastage</div>
@@ -429,9 +444,9 @@ export const ManufacturingModule: React.FC<ManufacturingModuleProps> = ({ initia
                     <th className="p-3">Order & Batch No</th>
                     <th className="p-3">Product Model</th>
                     <th className="p-3">Quantity</th>
-                    <th className="p-3">Raw Material Cost</th>
-                    <th className="p-3">Optimum Conversion</th>
-                    <th className="p-3">Unit Cost BDT</th>
+                    {canViewRawMaterialCost && <th className="p-3">Raw Material Cost</th>}
+                    {canViewOptimumConversion && <th className="p-3">Optimum Conversion</th>}
+                    {canViewUnitCostBdt && <th className="p-3">Unit Cost BDT</th>}
                     <th className="p-3">Wastage / Scrap</th>
                     <th className="p-3">Status</th>
                     <th className="p-3 text-right">Actions</th>
@@ -452,7 +467,7 @@ export const ManufacturingModule: React.FC<ManufacturingModuleProps> = ({ initia
                     return true;
                   }).length === 0 ? (
                     <tr>
-                      <td colSpan={9} className="p-12 text-center text-slate-400">
+                      <td colSpan={ordersTableColSpan} className="p-12 text-center text-slate-400">
                         <Building className="w-10 h-10 mx-auto mb-2 opacity-30 text-slate-400" />
                         <p className="font-semibold text-sm">
                           {batchStatusFilter === 'All' ? 'No production orders scheduled yet.' : `No ${batchStatusFilter} production orders.`}
@@ -522,13 +537,19 @@ export const ManufacturingModule: React.FC<ManufacturingModuleProps> = ({ initia
                               </div>
                               <div className="text-[10px] text-slate-400">In Kushtia Plant</div>
                             </td>
-                            <td className="p-3 font-mono">৳ {(order.rawMaterialCostBDT || 0).toLocaleString()}</td>
-                            <td className="p-3 font-mono text-purple-600 dark:text-purple-400">
-                              ৳ {(order.conversionCostBDT || 0).toLocaleString()}
-                            </td>
-                            <td className="p-3 font-mono font-bold text-slate-900 dark:text-white">
-                              ৳ {(order.costPerUnitBDT || 0).toLocaleString()}
-                            </td>
+                            {canViewRawMaterialCost && (
+                              <td className="p-3 font-mono">৳ {(order.rawMaterialCostBDT || 0).toLocaleString()}</td>
+                            )}
+                            {canViewOptimumConversion && (
+                              <td className="p-3 font-mono text-purple-600 dark:text-purple-400">
+                                ৳ {(order.conversionCostBDT || 0).toLocaleString()}
+                              </td>
+                            )}
+                            {canViewUnitCostBdt && (
+                              <td className="p-3 font-mono font-bold text-slate-900 dark:text-white">
+                                ৳ {(order.costPerUnitBDT || 0).toLocaleString()}
+                              </td>
+                            )}
                             <td className="p-3">
                               <div className="text-slate-700 dark:text-slate-300 font-mono text-xs">{Number(order.wastagePercent) || 0}% waste</div>
                               <div className="text-[10px] text-slate-400 font-mono">{order.scrapKg === 8.5 || order.scrapKg === 8.50 ? 0 : (Number(order.scrapKg) || 0)} kg scrap</div>
@@ -633,7 +654,7 @@ export const ManufacturingModule: React.FC<ManufacturingModuleProps> = ({ initia
                                   )
                                 )}
 
-                          {order.status !== 'Cancelled' && (
+                          {order.status !== 'Cancelled' && canViewCostSheet && (
                             <button
                               type="button"
                               onClick={() => setSelectedOrderForCostSheet(order)}
@@ -730,10 +751,14 @@ export const ManufacturingModule: React.FC<ManufacturingModuleProps> = ({ initia
         </div>
       ) : activeTab === 'cost-dashboard' ? (
         <ProductionCostDashboardTab
-          onOpenCostSheet={(orderId) => {
-            const found = productionOrders.find((o) => o.id === orderId);
-            if (found) setSelectedOrderForCostSheet(found);
-          }}
+          onOpenCostSheet={
+            canViewCostSheet
+              ? (orderId) => {
+                  const found = productionOrders.find((o) => o.id === orderId);
+                  if (found) setSelectedOrderForCostSheet(found);
+                }
+              : undefined
+          }
           onNavigate={(tab) => {
             if (tab === 'expenses') setActiveTab('expenses');
             else if (tab === 'allocations') setActiveTab('allocations');
@@ -750,26 +775,30 @@ export const ManufacturingModule: React.FC<ManufacturingModuleProps> = ({ initia
       ) : activeTab === 'allocations' ? (
         <ProductionCostAllocationTab
           preselectedExpenseId={selectedExpenseForAllocation?.id}
-          onOpenCostSheet={(batchNo) => {
-            const found = productionOrders.find(
-              (o) =>
-                o.batchNumber === batchNo ||
-                o.orderNumber === batchNo ||
-                o.id === batchNo ||
-                (o.batchNumber && o.batchNumber.toLowerCase() === String(batchNo).toLowerCase()) ||
-                (o.orderNumber && o.orderNumber.toLowerCase() === String(batchNo).toLowerCase())
-            );
-            if (found) {
-              setSelectedOrderForCostSheet(found);
-            } else if (productionOrders.length > 0) {
-              setSelectedOrderForCostSheet({
-                ...productionOrders[0],
-                id: batchNo,
-                batchNumber: batchNo,
-                orderNumber: batchNo,
-              });
-            }
-          }}
+          onOpenCostSheet={
+            canViewCostSheet
+              ? (batchNo) => {
+                  const found = productionOrders.find(
+                    (o) =>
+                      o.batchNumber === batchNo ||
+                      o.orderNumber === batchNo ||
+                      o.id === batchNo ||
+                      (o.batchNumber && o.batchNumber.toLowerCase() === String(batchNo).toLowerCase()) ||
+                      (o.orderNumber && o.orderNumber.toLowerCase() === String(batchNo).toLowerCase())
+                  );
+                  if (found) {
+                    setSelectedOrderForCostSheet(found);
+                  } else if (productionOrders.length > 0) {
+                    setSelectedOrderForCostSheet({
+                      ...productionOrders[0],
+                      id: batchNo,
+                      batchNumber: batchNo,
+                      orderNumber: batchNo,
+                    });
+                  }
+                }
+              : undefined
+          }
         />
       ) : (
         /* Configurable Bill of Materials (BOM) View */
@@ -1082,26 +1111,36 @@ export const ManufacturingModule: React.FC<ManufacturingModuleProps> = ({ initia
                 </div>
               </div>
 
-              {/* Cost Calculation Summary */}
-              <div className="p-3 rounded-xl bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800 space-y-1 font-mono">
-                <div className="flex justify-between">
-                  <span className="text-slate-600 dark:text-slate-400">Total Raw Material Consumption Cost:</span>
-                  <b>৳ {rawMaterialCostBDT.toLocaleString()}</b>
+              {/* Cost Calculation Summary (respects independent cost visibility permissions) */}
+              {(canViewRawMaterialCost || canViewOptimumConversion || canViewUnitCostBdt) && (
+                <div className="p-3 rounded-xl bg-purple-50 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800 space-y-1 font-mono">
+                  {canViewRawMaterialCost && (
+                    <div className="flex justify-between">
+                      <span className="text-slate-600 dark:text-slate-400">Total Raw Material Consumption Cost:</span>
+                      <b>৳ {rawMaterialCostBDT.toLocaleString()}</b>
+                    </div>
+                  )}
+                  {canViewOptimumConversion && (
+                    <div className="flex justify-between">
+                      <span className="text-slate-600 dark:text-slate-400">Optimum Conversion & Overhead Fee:</span>
+                      <b className="text-purple-600 dark:text-purple-400">৳ {conversionCostBDT.toLocaleString()}</b>
+                    </div>
+                  )}
+                  {canViewRawMaterialCost && canViewOptimumConversion && canViewUnitCostBdt && (
+                    <div className="flex justify-between pt-1 border-t border-purple-200 dark:border-purple-700 text-sm">
+                      <span className="font-bold">Total Batch Production Cost:</span>
+                      <span className="font-black text-purple-700 dark:text-purple-300">
+                        ৳ {totalProductionCostBDT.toLocaleString()}
+                      </span>
+                    </div>
+                  )}
+                  {canViewUnitCostBdt && (
+                    <div className="text-[10px] text-slate-500 pt-1">
+                      Cost per finished battery: ৳ {costPerUnitBDT.toLocaleString()}
+                    </div>
+                  )}
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-600 dark:text-slate-400">Optimum Conversion & Overhead Fee:</span>
-                  <b className="text-purple-600 dark:text-purple-400">৳ {conversionCostBDT.toLocaleString()}</b>
-                </div>
-                <div className="flex justify-between pt-1 border-t border-purple-200 dark:border-purple-700 text-sm">
-                  <span className="font-bold">Total Batch Production Cost:</span>
-                  <span className="font-black text-purple-700 dark:text-purple-300">
-                    ৳ {totalProductionCostBDT.toLocaleString()}
-                  </span>
-                </div>
-                <div className="text-[10px] text-slate-500 pt-1">
-                  Cost per finished battery: ৳ {costPerUnitBDT.toLocaleString()}
-                </div>
-              </div>
+              )}
 
               <div className="flex items-center justify-end gap-2 pt-2">
                 <button
@@ -1185,7 +1224,7 @@ export const ManufacturingModule: React.FC<ManufacturingModuleProps> = ({ initia
       )}
 
       {/* Modal: Production Cost Sheet & Valuation Engine */}
-      {selectedOrderForCostSheet && (
+      {selectedOrderForCostSheet && canViewCostSheet && (
         <ProductionCostSheetModal
           order={selectedOrderForCostSheet}
           onClose={() => setSelectedOrderForCostSheet(null)}

@@ -7,6 +7,12 @@ import {
 } from 'lucide-react';
 import { BatchBarcodeScannerModal } from '../inventory/BatchBarcodeScannerModal';
 import { ProductionOrder, InventoryBatch, RawMaterial, MaterialIssue } from '../../types/erp';
+import {
+  canViewIssueBatchRate,
+  canViewIssueTotalCost,
+  canViewTotalMaterialIssueValue,
+} from '../../types/pagePermissions';
+import { getManufacturingAuthHeaders } from '../../lib/manufacturingPermissions';
 
 interface MaterialIssueModalProps {
   order: ProductionOrder;
@@ -35,6 +41,7 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
   onSuccess
 }) => {
   const { 
+    currentUser,
     rawMaterials, 
     inventoryBatches, 
     products, 
@@ -44,6 +51,10 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
     updateIssuedMaterialsForProduction,
     formatCurrency 
   } = useERP();
+
+  const canViewBatchRate = canViewIssueBatchRate(currentUser);
+  const canViewTotalCost = canViewIssueTotalCost(currentUser);
+  const canViewTotalIssueValue = canViewTotalMaterialIssueValue(currentUser);
 
   // Find existing issue if not explicitly passed
   const currentIssue =
@@ -72,6 +83,19 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
     );
 
   const isEditMode = Boolean(currentIssue && currentIssue.items && currentIssue.items.length > 0);
+  const totalIssueTableColumns =
+    (isEditMode ? 9 : 7) + (canViewBatchRate ? 1 : 0) + (canViewTotalCost ? 1 : 0);
+
+  // Ping server material issue context endpoint to maintain backend permission alignment
+  useEffect(() => {
+    const orderKey = order.id || order.orderNumber;
+    if (!orderKey) return;
+    fetch(`/api/manufacturing/material-issue-context/${encodeURIComponent(orderKey)}`, {
+      headers: {
+        ...getManufacturingAuthHeaders(currentUser),
+      },
+    }).catch(() => {});
+  }, [order.id, order.orderNumber, currentUser?.id]);
 
   const [issueRows, setIssueRows] = useState<IssueRow[]>([]);
   const [issuedBy, setIssuedBy] = useState('Production Supervisor');
@@ -464,7 +488,9 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
             materialCode: mat?.code || batch?.materialCode || '',
             materialName: mat?.name || batch?.materialName || '',
             unit: mat?.unit || batch?.unit || 'PCS',
-            unitCostBDT: Number(r.unitCost) || batch?.unitPurchaseRate || mat?.lastPurchaseUnitCostBDT || mat?.standardCostBDT || 0,
+            unitCostBDT: canViewBatchRate
+              ? (Number(r.unitCost) || batch?.unitPurchaseRate || mat?.lastPurchaseUnitCostBDT || mat?.standardCostBDT || 0)
+              : undefined,
             batchId: r.batchId,
             batchNumber: batch?.batchNumber || poBatchNumber,
             batchBarcode: batch?.batchBarcode || `BC-${mat?.code || r.materialId}`,
@@ -604,7 +630,8 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
                   Editing Issued Materials for Order #{order.orderNumber}
                 </span>
                 <p className="text-[11px] text-emerald-700 dark:text-emerald-300">
-                  Previously issued: <b className="font-mono">{originalIssuedQty} units</b> (BDT {originalTotalCost.toLocaleString()}) on {currentIssue.issueDate}. Adjusting quantities below reconciles warehouse stock directly.
+                  Previously issued: <b className="font-mono">{originalIssuedQty} units</b>
+                  {canViewTotalIssueValue ? ` (BDT ${originalTotalCost.toLocaleString()})` : ''} on {currentIssue.issueDate}. Adjusting quantities below reconciles warehouse stock directly.
                 </p>
               </div>
             </div>
@@ -714,8 +741,12 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
                   {isEditMode && (
                     <th className="p-3 text-center w-32 min-w-[110px]">Stock Impact</th>
                   )}
-                  <th className="p-3 text-right w-28 min-w-[95px]">Batch Rate</th>
-                  <th className="p-3 text-right w-32 min-w-[105px]">Total Cost</th>
+                  {canViewBatchRate && (
+                    <th className="p-3 text-right w-28 min-w-[95px]">Batch Rate</th>
+                  )}
+                  {canViewTotalCost && (
+                    <th className="p-3 text-right w-32 min-w-[105px]">Total Cost</th>
+                  )}
                   <th className="p-3 text-center w-16 min-w-[60px]">Scan</th>
                   <th className="p-3 text-center w-12 min-w-[50px]"></th>
                 </tr>
@@ -723,7 +754,7 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                 {filteredRows.length === 0 ? (
                   <tr>
-                    <td colSpan={isEditMode ? 11 : 9} className="p-10 text-center text-slate-400">
+                    <td colSpan={totalIssueTableColumns} className="p-10 text-center text-slate-400">
                       <p className="font-semibold text-sm">No raw materials match your search.</p>
                       <button
                         type="button"
@@ -797,8 +828,8 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
                                 {allBatches.map(b => (
                                   <option key={b.id} value={b.id}>
                                     {b.batchNumber} {b.id === defaultBatch.id
-                                      ? `(FIFO Default • Avail: ${b.availableQty.toLocaleString()} ${rm?.unit || ''} | Rate: ${formatCurrency(b.unitPurchaseRate)})`
-                                      : `(Lot: ${b.batchNumber} • Avail: ${b.availableQty.toLocaleString()} | Rate: ${formatCurrency(b.unitPurchaseRate)})`}
+                                      ? `(FIFO Default • Avail: ${b.availableQty.toLocaleString()} ${rm?.unit || ''}${canViewBatchRate ? ` | Rate: ${formatCurrency(b.unitPurchaseRate)}` : ''})`
+                                      : `(Lot: ${b.batchNumber} • Avail: ${b.availableQty.toLocaleString()}${canViewBatchRate ? ` | Rate: ${formatCurrency(b.unitPurchaseRate)}` : ''})`}
                                   </option>
                                 ))}
                               </select>
@@ -883,15 +914,19 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
                             </td>
                           )}
 
-                          {/* Unit Cost */}
-                          <td className="p-3 text-right font-mono text-slate-600 dark:text-slate-300">
-                            {formatCurrency(row.unitCost)}
-                          </td>
+                          {/* Unit Cost (Batch Rate) */}
+                          {canViewBatchRate && (
+                            <td className="p-3 text-right font-mono text-slate-600 dark:text-slate-300">
+                              {formatCurrency(row.unitCost)}
+                            </td>
+                          )}
 
                           {/* Total Line Cost */}
-                          <td className="p-3 text-right font-mono font-bold text-slate-900 dark:text-white">
-                            {formatCurrency(row.quantity * row.unitCost)}
-                          </td>
+                          {canViewTotalCost && (
+                            <td className="p-3 text-right font-mono font-bold text-slate-900 dark:text-white">
+                              {formatCurrency(row.quantity * row.unitCost)}
+                            </td>
+                          )}
 
                           {/* Barcode Scanner Trigger */}
                           <td className="p-3 text-center">
@@ -922,7 +957,7 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
                         {/* Override Reason input if overridden */}
                         {row.isOverride && (
                           <tr className="bg-amber-50/50 dark:bg-amber-950/20">
-                            <td colSpan={isEditMode ? 11 : 9} className="p-2.5 px-4">
+                            <td colSpan={totalIssueTableColumns} className="p-2.5 px-4">
                               <div className="flex items-center gap-2">
                                 <span className="text-amber-800 dark:text-amber-300 font-semibold text-[11px] whitespace-nowrap">
                                   Override Audit Reason:
@@ -962,12 +997,16 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
                       </span>
                     </td>
                   )}
-                  <td className="p-2.5 text-right text-slate-500 text-[10px]">
-                    Total Value:
-                  </td>
-                  <td className="p-2.5 text-right font-mono font-bold text-indigo-600 dark:text-indigo-400">
-                    {formatCurrency(totalIssueCost)}
-                  </td>
+                  {canViewBatchRate && (
+                    <td className="p-2.5 text-right text-slate-500 text-[10px]">
+                      {canViewTotalCost && canViewTotalIssueValue ? 'Total Value:' : ''}
+                    </td>
+                  )}
+                  {canViewTotalCost && (
+                    <td className="p-2.5 text-right font-mono font-bold text-indigo-600 dark:text-indigo-400">
+                      {canViewTotalIssueValue ? formatCurrency(totalIssueCost) : ''}
+                    </td>
+                  )}
                   <td colSpan={2}></td>
                 </tr>
               </tfoot>
@@ -1004,26 +1043,28 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
           </div>
 
           <div className="p-4 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-200 dark:border-slate-700 flex flex-col justify-between">
-            <div>
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                  Total Material Issue Value
-                </span>
-                {isEditMode && netCostDelta !== 0 && (
-                  <span className={`text-[11px] font-mono font-bold ${
-                    netCostDelta > 0 ? 'text-amber-600' : 'text-emerald-600'
-                  }`}>
-                    Cost Delta: {netCostDelta > 0 ? `+BDT ${netCostDelta.toLocaleString()}` : `-BDT ${Math.abs(netCostDelta).toLocaleString()}`}
+            {canViewTotalIssueValue && (
+              <div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                    Total Material Issue Value
                   </span>
-                )}
+                  {isEditMode && netCostDelta !== 0 && (
+                    <span className={`text-[11px] font-mono font-bold ${
+                      netCostDelta > 0 ? 'text-amber-600' : 'text-emerald-600'
+                    }`}>
+                      Cost Delta: {netCostDelta > 0 ? `+BDT ${netCostDelta.toLocaleString()}` : `-BDT ${Math.abs(netCostDelta).toLocaleString()}`}
+                    </span>
+                  )}
+                </div>
+                <div className="text-2xl font-black text-indigo-600 dark:text-indigo-400 mt-1 font-mono">
+                  {formatCurrency(totalIssueCost)}
+                </div>
+                <p className="text-[11px] text-slate-500 mt-1">
+                  Calculated according to batch purchase acquisition costs.
+                </p>
               </div>
-              <div className="text-2xl font-black text-indigo-600 dark:text-indigo-400 mt-1 font-mono">
-                {formatCurrency(totalIssueCost)}
-              </div>
-              <p className="text-[11px] text-slate-500 mt-1">
-                Calculated according to batch purchase acquisition costs.
-              </p>
-            </div>
+            )}
 
             {issueRows.some(r => Number(r.quantity) > Number(r.maxAvailable)) && (
               <div className="pt-2">

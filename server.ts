@@ -18,6 +18,13 @@ import type {
   OfficeLocation,
   RejectedAttendanceAttempt,
 } from './src/types/payroll.ts';
+import {
+  authorizeCostSheetForUser,
+  resolveManufacturingCostPermissions,
+  sanitizeMaterialIssueContextForUser,
+  sanitizeMaterialIssueRecordForUser,
+  sanitizeProductionOrderForUser,
+} from './src/lib/manufacturingPermissions.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -744,6 +751,440 @@ export function createAppServer() {
       }
     }
     res.json({ synced: attendanceRecordsStore.size });
+  });
+
+  // ============================================================================
+  // MANUFACTURING COST VISIBILITY & COST SHEET AUTHORIZATION API
+  // ============================================================================
+  const mfgUsersCache = new Map<string, any>();
+  const mfgOrdersCache = new Map<string, any>();
+  const mfgIssuesCache = new Map<string, any>();
+  const mfgRawMaterialsCache = new Map<string, any>();
+  const mfgBatchesCache = new Map<string, any>();
+
+  const indexUserInMfgCache = (u: any) => {
+    if (!u || typeof u !== 'object') return;
+    if (u.id) mfgUsersCache.set(String(u.id).toLowerCase(), u);
+    if (u.userId) mfgUsersCache.set(String(u.userId).toLowerCase(), u);
+    if (u.uid) mfgUsersCache.set(String(u.uid).toLowerCase(), u);
+    if (u.email) mfgUsersCache.set(String(u.email).toLowerCase(), u);
+  };
+
+  const mapSupabaseUserRow = (row: any) => {
+    let parsedPermissions = row.permissions;
+    if (typeof parsedPermissions === 'string') {
+      try {
+        parsedPermissions = JSON.parse(parsedPermissions);
+      } catch {
+        parsedPermissions = null;
+      }
+    }
+    return {
+      id: row.uid ? String(row.uid) : `u-sb-${row.id}`,
+      userId: row.uid || (row.email ? String(row.email).split('@')[0].toUpperCase() : `EMP-${row.id}`),
+      name: row.name || 'Staff User',
+      email: row.email || '',
+      role: row.role || 'Field Force',
+      department: row.department || '',
+      status: row.status || 'Active',
+      permissions: parsedPermissions || {},
+    };
+  };
+
+  const resolveRequestUser = async (req: express.Request): Promise<any | null> => {
+    const hdrId = String(req.headers['x-user-id'] || req.query.userId || '').trim();
+    const hdrCode = String(req.headers['x-user-code'] || '').trim();
+    const hdrEmail = String(req.headers['x-user-email'] || req.query.userEmail || '').trim();
+
+    if (!hdrId && !hdrCode && !hdrEmail) {
+      return null;
+    }
+
+    // 1. Prefer authoritative Supabase users table when available
+    if (serverSupabase) {
+      try {
+        if (hdrEmail) {
+          const { data } = await serverSupabase
+            .from('users')
+            .select('*')
+            .ilike('email', hdrEmail)
+            .limit(1)
+            .maybeSingle();
+          if (data) {
+            const mapped = mapSupabaseUserRow(data);
+            indexUserInMfgCache(mapped);
+            return mapped;
+          }
+        }
+        const lookupUid = hdrCode || hdrId;
+        if (lookupUid) {
+          const { data } = await serverSupabase
+            .from('users')
+            .select('*')
+            .eq('uid', lookupUid)
+            .limit(1)
+            .maybeSingle();
+          if (data) {
+            const mapped = mapSupabaseUserRow(data);
+            indexUserInMfgCache(mapped);
+            return mapped;
+          }
+        }
+        if (/^u-sb-(\d+)$/i.test(hdrId)) {
+          const numId = Number(hdrId.replace(/^u-sb-/i, ''));
+          const { data } = await serverSupabase
+            .from('users')
+            .select('*')
+            .eq('id', numId)
+            .limit(1)
+            .maybeSingle();
+          if (data) {
+            const mapped = mapSupabaseUserRow(data);
+            indexUserInMfgCache(mapped);
+            return mapped;
+          }
+        }
+      } catch {
+        // Fall back to server in-memory store below
+      }
+    }
+
+    // 2. Fallback to synchronized server user cache
+    const candidates = [hdrId, hdrCode, hdrEmail]
+      .map((s) => s.toLowerCase())
+      .filter(Boolean);
+    for (const key of candidates) {
+      const hit = mfgUsersCache.get(key);
+      if (hit) return hit;
+    }
+
+    return null;
+  };
+
+  app.post('/api/manufacturing/sync-state', (req, res) => {
+    const body = req.body || {};
+    if (Array.isArray(body.users)) {
+      for (const u of body.users) {
+        indexUserInMfgCache(u);
+      }
+    }
+    if (Array.isArray(body.productionOrders)) {
+      for (const po of body.productionOrders) {
+        if (po && (po.id || po.orderNumber)) {
+          mfgOrdersCache.set(String(po.id || po.orderNumber), po);
+        }
+      }
+    }
+    if (Array.isArray(body.materialIssues)) {
+      for (const mi of body.materialIssues) {
+        if (mi && (mi.id || mi.productionOrderId)) {
+          mfgIssuesCache.set(String(mi.id || mi.productionOrderId), mi);
+        }
+      }
+    }
+    if (Array.isArray(body.rawMaterials)) {
+      for (const rm of body.rawMaterials) {
+        if (rm && (rm.id || rm.code)) {
+          mfgRawMaterialsCache.set(String(rm.id || rm.code), rm);
+        }
+      }
+    }
+    if (Array.isArray(body.inventoryBatches)) {
+      for (const b of body.inventoryBatches) {
+        if (b && (b.id || b.batchNumber)) {
+          mfgBatchesCache.set(String(b.id || b.batchNumber), b);
+        }
+      }
+    }
+    res.json({ ok: true });
+  });
+
+  app.get('/api/manufacturing/permissions', async (req, res) => {
+    const caller = await resolveRequestUser(req);
+    const permissions = resolveManufacturingCostPermissions(caller);
+    res.json({ authenticated: Boolean(caller), permissions });
+  });
+
+  app.get('/api/manufacturing/production-orders', async (req, res) => {
+    const caller = await resolveRequestUser(req);
+    const permissions = resolveManufacturingCostPermissions(caller);
+
+    let orders: any[] = Array.from(mfgOrdersCache.values());
+    if (serverSupabase) {
+      try {
+        const { data } = await serverSupabase
+          .from('production_orders')
+          .select('*')
+          .order('id', { ascending: false });
+        if (Array.isArray(data) && data.length > 0) {
+          orders = data.map((row: any) => ({
+            id: String(row.id),
+            orderNumber: row.order_number || row.orderNumber || `PO-${row.id}`,
+            batchNumber: row.batch_number || row.batchNumber || '',
+            productId: row.product_id || row.productId || '',
+            productName: row.product_name || row.productName || '',
+            model: row.model || '',
+            plannedQty: Number(row.planned_qty ?? row.plannedQty ?? 0),
+            completedQty: Number(row.completed_qty ?? row.completedQty ?? 0),
+            rawMaterialCostBDT: Number(row.raw_material_cost_bdt ?? row.rawMaterialCostBDT ?? 0),
+            conversionCostBDT: Number(row.conversion_cost_bdt ?? row.conversionCostBDT ?? 0),
+            optimumLaborCostBDT: Number(row.optimum_labor_cost_bdt ?? row.optimumLaborCostBDT ?? 0),
+            factoryOverheadBDT: Number(row.factory_overhead_bdt ?? row.factoryOverheadBDT ?? 0),
+            costPerUnitBDT: Number(row.cost_per_unit_bdt ?? row.costPerUnitBDT ?? 0),
+            totalProductionCostBDT: Number(row.total_production_cost_bdt ?? row.totalProductionCostBDT ?? 0),
+            wastagePercent: Number(row.wastage_percent ?? row.wastagePercent ?? 0),
+            scrapKg: Number(row.scrap_kg ?? row.scrapKg ?? 0),
+            status: row.status || 'In Production',
+            date: row.date || row.start_date || '',
+            fgReceivingStatus: row.fg_receiving_status || row.fgReceivingStatus,
+            receivedFgQty: row.received_fg_qty ?? row.receivedFgQty,
+          }));
+        }
+      } catch {
+        // Use in-memory cache fallback
+      }
+    }
+
+    const sanitizedOrders = orders.map((order) => sanitizeProductionOrderForUser(order, caller));
+    res.json({ permissions, orders: sanitizedOrders });
+  });
+
+  app.get('/api/manufacturing/cost-sheet/:orderId', async (req, res) => {
+    const caller = await resolveRequestUser(req);
+    const auth = authorizeCostSheetForUser(caller);
+    if (!auth.allowed) {
+      return res.status(403).json({
+        allowed: false,
+        code: 'COST_SHEET_FORBIDDEN',
+        error: auth.reason || 'Forbidden: View Cost Sheet permission is disabled.',
+      });
+    }
+
+    const rawOrderId = String(req.params.orderId || '').trim();
+    const targetLower = rawOrderId.toLowerCase();
+
+    let order = Array.from(mfgOrdersCache.values()).find(
+      (po) =>
+        String(po.id || '').toLowerCase() === targetLower ||
+        String(po.orderNumber || '').toLowerCase() === targetLower ||
+        String(po.batchNumber || '').toLowerCase() === targetLower
+    );
+
+    if (!order && serverSupabase) {
+      try {
+        const { data } = await serverSupabase.from('production_orders').select('*');
+        if (Array.isArray(data)) {
+          const hit = data.find(
+            (row: any) =>
+              String(row.id || '').toLowerCase() === targetLower ||
+              String(row.order_number || '').toLowerCase() === targetLower ||
+              String(row.batch_number || '').toLowerCase() === targetLower
+          );
+          if (hit) {
+            order = {
+              id: String(hit.id),
+              orderNumber: hit.order_number || `PO-${hit.id}`,
+              batchNumber: hit.batch_number || '',
+              productId: hit.product_id || '',
+              productName: hit.product_name || '',
+              model: hit.model || '',
+              plannedQty: Number(hit.planned_qty ?? 0),
+              completedQty: Number(hit.completed_qty ?? 0),
+              rawMaterialCostBDT: Number(hit.raw_material_cost_bdt ?? 0),
+              conversionCostBDT: Number(hit.conversion_cost_bdt ?? 0),
+              optimumLaborCostBDT: Number(hit.optimum_labor_cost_bdt ?? 0),
+              factoryOverheadBDT: Number(hit.factory_overhead_bdt ?? 0),
+              costPerUnitBDT: Number(hit.cost_per_unit_bdt ?? 0),
+              totalProductionCostBDT: Number(hit.total_production_cost_bdt ?? 0),
+              status: hit.status || 'In Production',
+              date: hit.date || hit.start_date || '',
+            };
+          }
+        }
+      } catch {
+        // Ignore if table unavailable
+      }
+    }
+
+    if (!order) {
+      return res.status(404).json({
+        allowed: true,
+        error: `Production order or batch "${rawOrderId}" not found.`,
+      });
+    }
+
+    return res.status(200).json({
+      allowed: true,
+      order,
+    });
+  });
+
+  app.get('/api/manufacturing/material-issue-context/:orderId', async (req, res) => {
+    const caller = await resolveRequestUser(req);
+    const rawOrderId = String(req.params.orderId || '').trim();
+    const targetLower = rawOrderId.toLowerCase();
+
+    const orders = Array.from(mfgOrdersCache.values());
+    const order =
+      orders.find(
+        (po) =>
+          String(po.id || '').toLowerCase() === targetLower ||
+          String(po.orderNumber || '').toLowerCase() === targetLower ||
+          String(po.batchNumber || '').toLowerCase() === targetLower
+      ) || { id: rawOrderId, orderNumber: rawOrderId };
+
+    const issues = Array.from(mfgIssuesCache.values());
+    const existingIssue =
+      issues.find(
+        (mi) =>
+          String(mi.productionOrderId || '').toLowerCase() === String(order.id || targetLower).toLowerCase() ||
+          String(mi.productionOrderNumber || '').toLowerCase() === String(order.orderNumber || targetLower).toLowerCase()
+      ) || null;
+
+    let rawMaterials = Array.from(mfgRawMaterialsCache.values());
+    let batches = Array.from(mfgBatchesCache.values());
+
+    if (serverSupabase && rawMaterials.length === 0) {
+      try {
+        const { data: rmRows } = await serverSupabase.from('raw_materials').select('*');
+        if (Array.isArray(rmRows)) {
+          rawMaterials = rmRows.map((r: any) => ({
+            id: String(r.id),
+            code: r.code,
+            name: r.name,
+            unit: r.unit,
+            category: r.category,
+            stockKushtia: Number(r.stock_kushtia ?? r.stock ?? 0),
+            lastPurchaseUnitCostBDT: Number(r.last_purchase_unit_cost_bdt ?? r.unit_cost ?? 0),
+            standardCostBDT: Number(r.standard_cost_bdt ?? 0),
+          }));
+        }
+      } catch {
+        // Ignore if unavailable
+      }
+    }
+
+    if (serverSupabase && batches.length === 0) {
+      try {
+        const { data: batchRows } = await serverSupabase.from('inventory_batches').select('*');
+        if (Array.isArray(batchRows)) {
+          batches = batchRows.map((b: any) => ({
+            id: String(b.id),
+            batchNumber: b.batch_number || b.batchNumber,
+            batchBarcode: b.batch_barcode || b.batchBarcode,
+            materialId: String(b.material_id || b.materialId || ''),
+            materialCode: b.material_code || b.materialCode || '',
+            materialName: b.material_name || b.materialName || '',
+            unitPurchaseRate: Number(b.unit_purchase_rate ?? b.unitPurchaseRate ?? 0),
+            availableQty: Number(b.available_qty ?? b.availableQty ?? 0),
+            receivedQty: Number(b.received_qty ?? b.receivedQty ?? 0),
+            issuedQty: Number(b.issued_qty ?? b.issuedQty ?? 0),
+            status: b.status || 'Active',
+          }));
+        }
+      } catch {
+        // Ignore if unavailable
+      }
+    }
+
+    const itemsSource = existingIssue?.items || [];
+    const totalVal = itemsSource.reduce(
+      (sum: number, it: any) => sum + (Number(it.totalMaterialCostBDT) || (Number(it.issuedQty || it.quantity || 0) * Number(it.unitCostBDT || it.unitCost || 0))),
+      0
+    );
+
+    const sanitized = sanitizeMaterialIssueContextForUser(
+      {
+        order,
+        existingIssue,
+        items: itemsSource,
+        batches,
+        rawMaterials,
+        totalMaterialIssueValue: existingIssue?.totalMaterialCostBDT ?? totalVal,
+      },
+      caller
+    );
+
+    return res.status(200).json(sanitized);
+  });
+
+  app.post('/api/manufacturing/material-issues', async (req, res) => {
+    const caller = await resolveRequestUser(req);
+    const body = req.body || {};
+    const items = Array.isArray(body.items) ? body.items : [];
+    const batches = Array.from(mfgBatchesCache.values());
+    const rawMaterials = Array.from(mfgRawMaterialsCache.values());
+
+    // Authoritative server-side costing resolution (works even when user lacks View Batch Rate permission)
+    let totalCost = 0;
+    let totalQty = 0;
+    const processedItems = items.map((item: any, idx: number) => {
+      const qty = Math.max(0, Number(item.quantity) || 0);
+      const batch = batches.find(
+        (b) =>
+          (item.batchId && String(b.id) === String(item.batchId)) ||
+          (item.batchNumber && String(b.batchNumber) === String(item.batchNumber))
+      );
+      const rm = rawMaterials.find(
+        (r) =>
+          String(r.id) === String(item.materialId) ||
+          (item.materialCode && String(r.code) === String(item.materialCode))
+      );
+      const authoritativeRate =
+        Number(batch?.unitPurchaseRate) ||
+        Number(rm?.lastPurchaseUnitCostBDT) ||
+        Number(rm?.standardCostBDT) ||
+        Number(item.unitCostBDT) ||
+        0;
+      const lineCost = qty * authoritativeRate;
+      totalCost += lineCost;
+      totalQty += qty;
+
+      if (batch) {
+        const nextAvail = Math.max(0, Number(batch.availableQty || 0) - qty);
+        const nextIssued = Number(batch.issuedQty || 0) + qty;
+        mfgBatchesCache.set(String(batch.id || batch.batchNumber), {
+          ...batch,
+          availableQty: nextAvail,
+          issuedQty: nextIssued,
+          status: nextAvail === 0 ? 'Depleted' : 'Active',
+        });
+      }
+
+      return {
+        id: `mii-srv-${Date.now()}-${idx}`,
+        materialId: String(item.materialId || rm?.id || ''),
+        materialCode: item.materialCode || rm?.code || '',
+        materialName: item.materialName || rm?.name || '',
+        batchNumber: item.batchNumber || batch?.batchNumber || '',
+        batchBarcode: item.batchBarcode || batch?.batchBarcode || '',
+        issuedQty: qty,
+        unitCostBDT: authoritativeRate,
+        totalMaterialCostBDT: lineCost,
+      };
+    });
+
+    const issueRecord = {
+      id: body.issueId || `mi-srv-${Date.now()}`,
+      issueNumber: body.issueNumber || `MI-SRV-${Date.now().toString().slice(-4)}`,
+      productionOrderId: String(body.productionOrderId || ''),
+      productionOrderNumber: String(body.productionOrderNumber || ''),
+      issuedBy: String(body.issuedBy || caller?.name || 'Production Supervisor'),
+      issueDate: new Date().toISOString().slice(0, 10),
+      totalIssuedQty: totalQty,
+      totalMaterialCostBDT: totalCost,
+      items: processedItems,
+      status: 'Issued',
+    };
+
+    mfgIssuesCache.set(String(issueRecord.id), issueRecord);
+
+    // Strip restricted financial fields from API response based on caller's permissions
+    const sanitizedIssue = sanitizeMaterialIssueRecordForUser(issueRecord, caller);
+    return res.status(200).json({
+      success: true,
+      issue: sanitizedIssue,
+    });
   });
 
   // Compatibility fallbacks for existing MobileSalesPortal calls
