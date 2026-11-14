@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
+import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
@@ -1198,12 +1199,19 @@ export function createAppServer() {
 
 async function startServer() {
   const app = createAppServer();
+  const httpServer = http.createServer(app);
   const isProd = process.env.NODE_ENV === 'production';
 
   if (!isProd) {
     const { createServer: createViteServer } = await import('vite');
+    const isHmrDisabled = process.env.DISABLE_HMR === 'true';
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        allowedHosts: true,
+        ws: { server: httpServer },
+        hmr: isHmrDisabled ? false : {},
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -1216,7 +1224,7 @@ async function startServer() {
   }
 
   const PORT = Number(process.env.PORT) || 3000;
-  app.listen(PORT, '0.0.0.0', () => {
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`Ensec ERP Server running on http://0.0.0.0:${PORT}`);
   });
 }
