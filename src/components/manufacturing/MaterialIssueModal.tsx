@@ -105,6 +105,7 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [scannerRowId, setScannerRowId] = useState<string | null>(null);
   const [rowToDeleteId, setRowToDeleteId] = useState<string | null>(null);
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('All');
   const [allowInsufficientStock, setAllowInsufficientStock] = useState<boolean>(false);
@@ -419,35 +420,32 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
   const netQtyDelta = totalQuantity - originalIssuedQty;
   const netCostDelta = totalIssueCost - originalTotalCost;
 
-  // Submit issue or update
-  const handleSubmit = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    if (isSubmitting) return;
+  // Validate form before opening confirmation modal or executing transaction
+  const validateIssueForm = (): boolean => {
     if (isOrderFullyReceived) {
       setErrorMsg('This production order has already been received into Finished Goods inventory. Raw materials issued are locked and cannot be edited.');
-      return;
+      return false;
     }
     setErrorMsg(null);
 
-    // Validate
     for (let i = 0; i < issueRows.length; i++) {
       const row = issueRows[i];
       if (!row.materialId) {
         setErrorMsg(`Row ${i + 1}: Select a raw material.`);
-        return;
+        return false;
       }
       if (!row.batchId) {
         setErrorMsg(`Row ${i + 1}: Select a batch.`);
-        return;
+        return false;
       }
       const qty = Number(row.quantity);
       if (isNaN(qty) || qty < 0) {
         setErrorMsg(`Row ${i + 1}: Quantity must be 0 or greater.`);
-        return;
+        return false;
       }
       if (row.isOverride && !row.overrideReason.trim()) {
         setErrorMsg(`Row ${i + 1}: Manual batch override requires an audit reason.`);
-        return;
+        return false;
       }
     }
 
@@ -466,8 +464,28 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
       setErrorMsg(
         `Raw Material Shortage Detected: Warehouse stock is insufficient for ${summaryNames}${extraCount}. You must check "Authorize Factory Issue with Shortfall" before confirming.`
       );
+      return false;
+    }
+
+    return true;
+  };
+
+  // Open confirmation modal after validation passes
+  const handleRequestConfirmation = () => {
+    if (isSubmitting || successMsg) return;
+    if (!validateIssueForm()) return;
+    setShowConfirmModal(true);
+  };
+
+  // Execute issue or update after user confirmation
+  const handleConfirmExecute = async () => {
+    if (isSubmitting) return;
+    if (!validateIssueForm()) {
+      setShowConfirmModal(false);
       return;
     }
+
+    const hasShortfall = issueRows.some(r => Number(r.quantity) > Number(r.maxAvailable));
 
     setIsSubmitting(true);
     try {
@@ -508,9 +526,11 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
       if (res && res.success === false) {
         setErrorMsg(res.error || 'Failed to update materials issue.');
         setIsSubmitting(false);
+        setShowConfirmModal(false);
         return;
       }
 
+      setShowConfirmModal(false);
       setSuccessMsg(
         isEditMode
           ? `Raw materials issue ${res?.issueNumber || currentIssue?.issueNumber || ''} updated successfully! Factory stock adjusted.`
@@ -523,6 +543,7 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
     } catch (err: any) {
       setErrorMsg(err.message || 'Failed to process materials issue.');
       setIsSubmitting(false);
+      setShowConfirmModal(false);
     }
   };
 
@@ -1122,7 +1143,7 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => handleSubmit()}
+                onClick={handleRequestConfirmation}
                 disabled={isSubmitting || !!successMsg || isOrderFullyReceived}
                 className={`px-5 py-2.5 text-white rounded-xl font-bold shadow-md transition flex items-center gap-1.5 cursor-pointer disabled:opacity-70 ${
                   isOrderFullyReceived
@@ -1211,6 +1232,139 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
                 className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-semibold cursor-pointer"
               >
                 Remove
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* CONFIRM MATERIAL ISSUE MODAL */}
+      {showConfirmModal && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
+          <div className="relative w-full max-w-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl p-6 space-y-4 text-xs">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <div className={`p-3 rounded-2xl shrink-0 ${
+                  isEditMode
+                    ? 'bg-emerald-100 dark:bg-emerald-950/80 text-emerald-600 dark:text-emerald-400'
+                    : 'bg-amber-100 dark:bg-amber-950/80 text-amber-600 dark:text-amber-400'
+                }`}>
+                  <PackageMinus className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                    {isEditMode ? 'Confirm Raw Material Issue Update' : 'Confirm Material Issue'}
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                    {isEditMode
+                      ? 'Please review the updated material quantities before reconciling Kushtia factory stock.'
+                      : 'Please confirm before issuing raw materials to production and deducting plant batch inventory.'}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => !isSubmitting && setShowConfirmModal(false)}
+                disabled={isSubmitting}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer disabled:opacity-40"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-3.5 bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 rounded-xl space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-slate-500 dark:text-slate-400">Production Order / Batch</span>
+                <span className="font-mono font-bold text-slate-900 dark:text-white">
+                  {order.orderNumber} • {poBatchNumber}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-slate-500 dark:text-slate-400">Product / Model</span>
+                <span className="font-semibold text-slate-800 dark:text-slate-200 text-right">
+                  {order.productName}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-slate-500 dark:text-slate-400">Items &amp; Total Issue Qty</span>
+                <span className="font-mono font-bold text-slate-900 dark:text-white">
+                  {issueRows.length} items • {totalQuantity.toLocaleString()} units
+                </span>
+              </div>
+              {isEditMode && (
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-slate-500 dark:text-slate-400">Net Stock Adjustment</span>
+                  <span className={`font-mono font-bold ${
+                    netQtyDelta > 0
+                      ? 'text-amber-600 dark:text-amber-400'
+                      : netQtyDelta < 0
+                      ? 'text-emerald-600 dark:text-emerald-400'
+                      : 'text-slate-600 dark:text-slate-300'
+                  }`}>
+                    {netQtyDelta > 0 ? `+${netQtyDelta} units (Deduct)` : netQtyDelta < 0 ? `${netQtyDelta} units (Return)` : '0 units (No Change)'}
+                  </span>
+                </div>
+              )}
+              {canViewTotalIssueValue && (
+                <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-slate-200 dark:border-slate-700">
+                  <span className="font-semibold text-slate-600 dark:text-slate-300">Total Material Issue Value</span>
+                  <span className="font-mono font-bold text-indigo-600 dark:text-indigo-400 text-sm">
+                    {formatCurrency(totalIssueCost)}
+                  </span>
+                </div>
+              )}
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-slate-500 dark:text-slate-400">Issued By</span>
+                <span className="font-medium text-slate-800 dark:text-slate-200">
+                  {issuedBy.trim() || 'Production Supervisor'}
+                </span>
+              </div>
+            </div>
+
+            {issueRows.some(r => Number(r.quantity) > Number(r.maxAvailable)) && (
+              <div className="p-3 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded-xl text-amber-800 dark:text-amber-300 flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
+                <span>
+                  Shortfall authorized for {issueRows.filter(r => Number(r.quantity) > Number(r.maxAvailable)).length} component(s). Transaction will be recorded with pending GRN reconciliation.
+                </span>
+              </div>
+            )}
+
+            {issueRows.some(r => r.isOverride) && (
+              <div className="p-2.5 bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 rounded-xl text-blue-800 dark:text-blue-300 text-[11px]">
+                Manual FIFO batch override applied on {issueRows.filter(r => r.isOverride).length} item(s) with audit reason logged.
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowConfirmModal(false)}
+                disabled={isSubmitting}
+                className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold cursor-pointer disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmExecute}
+                disabled={isSubmitting}
+                className={`px-4 py-2 rounded-xl text-white font-bold shadow-md flex items-center gap-1.5 cursor-pointer disabled:opacity-70 ${
+                  isEditMode
+                    ? 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-600/20'
+                    : 'bg-amber-600 hover:bg-amber-700 shadow-amber-600/20'
+                }`}
+              >
+                {isSubmitting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>{isEditMode ? 'Updating...' : 'Issuing...'}</span>
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>{isEditMode ? 'Yes, Update Material Issue' : 'Yes, Confirm Material Issue'}</span>
+                  </>
+                )}
               </button>
             </div>
           </div>
