@@ -1161,7 +1161,7 @@ export const CRMAgreementsPage: React.FC = () => {
               </button>
             </div>
           ) : (
-            <div className="space-y-3 max-h-[750px] overflow-y-auto pr-1">
+            <div className="space-y-2 max-h-[750px] overflow-y-auto pr-1">
               {filteredDeals.map((deal) => {
                 const isSelected = selectedDeal?.id === deal.id;
                 const stageStyle = STAGE_CONFIG[deal.stage] || STAGE_CONFIG.Lead;
@@ -1170,23 +1170,23 @@ export const CRMAgreementsPage: React.FC = () => {
                   <div
                     key={deal.id}
                     onClick={() => setSelectedDealId(deal.id)}
-                    className={`p-4 rounded-2xl border transition-all cursor-pointer space-y-2.5 ${
+                    className={`px-3 py-2 rounded-xl border transition-all cursor-pointer space-y-1 ${
                       isSelected
                         ? 'border-blue-500 bg-blue-50/40 dark:bg-blue-950/20 shadow-sm ring-1 ring-blue-500/20'
                         : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-700 shadow-2xs'
                     }`}
                   >
-                    <div className="flex items-center justify-between">
-                      <span
-                        className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${stageStyle.bg} ${stageStyle.text} ${stageStyle.border}`}
-                      >
-                        <span className={`w-1.5 h-1.5 rounded-full ${stageStyle.dot}`} />
-                        {stageStyle.label}
-                      </span>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px] text-slate-400 font-mono flex items-center gap-1">
-                          <Clock className="w-3 h-3" />
-                          {deal.lastContactDate || 'Recent'}
+                    {/* Row 1: Title + Stage + Edit */}
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="font-bold text-xs text-slate-900 dark:text-white truncate min-w-0">
+                        {deal.clientName}
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <span
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-bold border ${stageStyle.bg} ${stageStyle.text} ${stageStyle.border}`}
+                        >
+                          <span className={`w-1.5 h-1.5 rounded-full ${stageStyle.dot}`} />
+                          {stageStyle.label}
                         </span>
                         <button
                           type="button"
@@ -1195,56 +1195,56 @@ export const CRMAgreementsPage: React.FC = () => {
                             setSelectedDealId(deal.id);
                             openEditDealModal(deal);
                           }}
-                          className="p-1 rounded-lg text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40 transition-colors cursor-pointer"
+                          className="p-0.5 rounded-md text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40 transition-colors cursor-pointer"
                           title="Edit Agreement"
                         >
-                          <Edit3 className="w-3.5 h-3.5" />
+                          <Edit3 className="w-3 h-3" />
                         </button>
                       </div>
                     </div>
 
-                    <div>
-                      <div className="font-bold text-sm text-slate-900 dark:text-white line-clamp-1">
-                        {deal.clientName}
-                      </div>
-                      <div className="text-xs text-slate-500 dark:text-slate-400 flex items-center gap-1 mt-0.5">
-                        <Building2 className="w-3.5 h-3.5 text-slate-400" />
-                        <span>{deal.companyName}</span>
-                      </div>
+                    {/* Row 2: Company & Address inline */}
+                    <div className="flex items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400 min-w-0">
+                      <span className="inline-flex items-center gap-1 truncate min-w-0">
+                        <Building2 className="w-3 h-3 text-slate-400 shrink-0" />
+                        <span className="truncate">{deal.companyName}</span>
+                      </span>
                       {deal.address && (
-                        <div className="text-[11px] text-slate-400 dark:text-slate-500 flex items-center gap-1 mt-0.5 truncate">
-                          <MapPin className="w-3 h-3 text-slate-400 shrink-0" />
+                        <span className="inline-flex items-center gap-1 text-[10px] text-slate-400 dark:text-slate-500 truncate min-w-0">
+                          <span>•</span>
+                          <MapPin className="w-2.5 h-2.5 text-slate-400 shrink-0" />
                           <span className="truncate">{deal.address}</span>
-                        </div>
+                        </span>
                       )}
                     </div>
 
-                    <div className="pt-2.5 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-xs">
-                      <div className="space-y-0.5">
-                        <span className="text-[10px] text-slate-400 block font-sans">Volume Target</span>
-                        <span className="font-mono font-semibold text-slate-700 dark:text-slate-300">
+                    {/* Row 3: Compact metrics & metadata */}
+                    <div className="pt-1 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between gap-2 text-[10px]">
+                      <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400 truncate min-w-0">
+                        <span className="font-mono font-semibold text-slate-700 dark:text-slate-300 shrink-0">
                           {deal.expectedVolumeUnits !== null && deal.expectedVolumeUnits !== undefined
                             ? `${deal.expectedVolumeUnits.toLocaleString()} Units`
                             : '—'}
                         </span>
+                        <span>•</span>
+                        <span className="font-mono shrink-0">
+                          {deal.contractTermMonths !== null && deal.contractTermMonths !== undefined
+                            ? `${deal.contractTermMonths} Mo`
+                            : '—'}
+                        </span>
+                        <span>•</span>
+                        <span className="truncate">{deal.salespersonName}</span>
                       </div>
-                      <div className="text-right space-y-0.5">
-                        <span className="text-[10px] text-slate-400 block font-sans">Agreement Value</span>
-                        <span className="font-mono font-bold text-blue-600 dark:text-blue-400">
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="text-slate-400 font-mono hidden sm:inline">
+                          {deal.lastContactDate || 'Recent'}
+                        </span>
+                        <span className="font-mono font-bold text-[11px] text-blue-600 dark:text-blue-400">
                           {deal.estimatedValueBDT !== null && deal.estimatedValueBDT !== undefined
                             ? `৳ ${deal.estimatedValueBDT.toLocaleString()}`
                             : '—'}
                         </span>
                       </div>
-                    </div>
-
-                    <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1">
-                      <span>👤 {deal.salespersonName}</span>
-                      <span className="text-[10px] font-mono">
-                        {deal.contractTermMonths !== null && deal.contractTermMonths !== undefined
-                          ? `${deal.contractTermMonths} Mo Term`
-                          : '—'}
-                      </span>
                     </div>
                   </div>
                 );
