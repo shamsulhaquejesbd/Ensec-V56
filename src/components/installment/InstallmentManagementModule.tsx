@@ -51,6 +51,7 @@ import {
 } from '../../types/installment.ts';
 import { SalesOrder } from '../../types/erp.ts';
 import { calculateEarlySettlement } from '../../lib/installmentAutomation.ts';
+import { getSupabase } from '../../lib/supabase.ts';
 
 interface InstallmentManagementModuleProps {
   initialSubTab?: string;
@@ -78,7 +79,12 @@ export const InstallmentManagementModule: React.FC<InstallmentManagementModulePr
     deleteInstallmentPlan,
     clearInstallmentData,
     refreshInstallmentData,
+    refreshSalesOrders,
   } = useERP();
+
+  const [dbSalesOrderRefs, setDbSalesOrderRefs] = useState<
+    { id: string; orderNumber: string; invoiceNumber?: string; invoiceNo?: string }[]
+  >([]);
 
   const VALID_SUB_TABS = new Set([
     'installment-dashboard',
@@ -98,6 +104,25 @@ export const InstallmentManagementModule: React.FC<InstallmentManagementModulePr
 
   useEffect(() => {
     refreshInstallmentData?.();
+    refreshSalesOrders?.();
+
+    const sb = getSupabase();
+    if (sb) {
+      sb.from('sales_orders')
+        .select('id, order_number, invoice_number, invoice_no')
+        .then(({ data, error }) => {
+          if (!error && Array.isArray(data)) {
+            setDbSalesOrderRefs(
+              data.map((row: any) => ({
+                id: String(row.id),
+                orderNumber: row.order_number ? String(row.order_number) : '',
+                invoiceNumber: row.invoice_number ? String(row.invoice_number) : undefined,
+                invoiceNo: row.invoice_no ? String(row.invoice_no) : undefined,
+              }))
+            );
+          }
+        });
+    }
   }, []);
 
   // Clear Local Data Confirmation State
@@ -402,6 +427,15 @@ export const InstallmentManagementModule: React.FC<InstallmentManagementModulePr
     const prodObj = products.find((p) => p.id === newPlanProduct);
     const distObj = distributors.find((d) => d.id === newPlanDistributor);
 
+    const matchedOrderByRef =
+      selectedCreditOrder ||
+      salesOrders.find(
+        (o) => trimmedRefLower && o.orderNumber?.trim().toLowerCase() === trimmedRefLower
+      ) ||
+      dbSalesOrderRefs.find(
+        (o) => trimmedRefLower && o.orderNumber?.trim().toLowerCase() === trimmedRefLower
+      );
+
     try {
       const res = await createInstallmentPlan({
         agreementNo: '', // Auto-generated
@@ -411,7 +445,7 @@ export const InstallmentManagementModule: React.FC<InstallmentManagementModulePr
         customerDistrict: custObj?.district || 'Dhaka',
         distributorId: distObj?.id,
         distributorName: distObj?.name,
-        salesOrderId: selectedCreditOrder?.id,
+        salesOrderId: matchedOrderByRef?.id,
         invoiceReference: newPlanInvoiceRef.trim(),
         productId: newPlanProduct,
         productName: prodObj?.name || 'Ensec Battery Pack',
@@ -751,13 +785,45 @@ export const InstallmentManagementModule: React.FC<InstallmentManagementModulePr
     }));
   }, [installmentSchedules, installmentPlans]);
 
+  const getPlanSalesOrderNo = (plan: InstallmentPlan): string => {
+    const planSalesOrderId = plan.salesOrderId ? String(plan.salesOrderId).trim().toLowerCase() : '';
+    const planRef = plan.invoiceReference ? String(plan.invoiceReference).trim().toLowerCase() : '';
+
+    const dbMatched = dbSalesOrderRefs.find(
+      (o) =>
+        (planSalesOrderId &&
+          (String(o.id).trim().toLowerCase() === planSalesOrderId ||
+            o.orderNumber.trim().toLowerCase() === planSalesOrderId)) ||
+        (planRef &&
+          (o.orderNumber.trim().toLowerCase() === planRef ||
+            o.invoiceNumber?.trim().toLowerCase() === planRef ||
+            o.invoiceNo?.trim().toLowerCase() === planRef))
+    );
+    if (dbMatched?.orderNumber) {
+      return dbMatched.orderNumber;
+    }
+
+    const stateMatched = salesOrders.find(
+      (o) =>
+        (planSalesOrderId &&
+          (String(o.id).trim().toLowerCase() === planSalesOrderId ||
+            o.orderNumber?.trim().toLowerCase() === planSalesOrderId)) ||
+        (planRef && o.orderNumber?.trim().toLowerCase() === planRef)
+    );
+    return stateMatched?.orderNumber || '';
+  };
+
   // Filtered Agreements
   const filteredPlans = useMemo(() => {
+    const q = searchTerm.trim().toLowerCase();
     return installmentPlans.filter((p) => {
+      const salesOrderNo = getPlanSalesOrderNo(p).toLowerCase();
       const matchesSearch =
-        p.agreementNo.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        p.customerName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        p.productName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        !q ||
+        p.agreementNo.toLowerCase().includes(q) ||
+        salesOrderNo.includes(q) ||
+        p.customerName.toLowerCase().includes(q) ||
+        p.productName.toLowerCase().includes(q) ||
         p.customerPhone.includes(searchTerm);
 
       const matchesStatus =
@@ -768,7 +834,7 @@ export const InstallmentManagementModule: React.FC<InstallmentManagementModulePr
 
       return matchesSearch && matchesStatus && matchesDistrict;
     });
-  }, [installmentPlans, searchTerm, statusFilter, districtFilter]);
+  }, [installmentPlans, salesOrders, dbSalesOrderRefs, searchTerm, statusFilter, districtFilter]);
 
   // Filtered Schedules
   const filteredSchedules = useMemo(() => {
@@ -1639,7 +1705,7 @@ export const InstallmentManagementModule: React.FC<InstallmentManagementModulePr
                 <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
                 <input
                   type="text"
-                  placeholder="Search agreements, customers, phone..."
+                  placeholder="Search agreements, sales order, customers..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                   className="pl-8 pr-3 py-1.5 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white w-60"
@@ -1665,6 +1731,7 @@ export const InstallmentManagementModule: React.FC<InstallmentManagementModulePr
               <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-500 font-semibold border-b border-slate-200 dark:border-slate-800">
                 <tr>
                   <th className="p-3">Agreement No</th>
+                  <th className="p-3">Sales Order No</th>
                   <th className="p-3">Customer & Channel</th>
                   <th className="p-3">Product / Qty</th>
                   <th className="p-3">Financed (BDT)</th>
@@ -1677,7 +1744,7 @@ export const InstallmentManagementModule: React.FC<InstallmentManagementModulePr
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                 {filteredPlans.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="p-8 text-center">
+                    <td colSpan={9} className="p-8 text-center">
                       <div className="max-w-sm mx-auto space-y-2 py-6 text-xs">
                         <CreditCard className="w-8 h-8 mx-auto text-slate-300 dark:text-slate-600" />
                         <div className="font-semibold text-slate-700 dark:text-slate-300 text-sm">
@@ -1708,6 +1775,8 @@ export const InstallmentManagementModule: React.FC<InstallmentManagementModulePr
                         ? Math.min(100, Math.round((plan.totalPaidBDT / plan.totalProductPriceBDT) * 100))
                         : 0;
 
+                    const salesOrderNo = getPlanSalesOrderNo(plan);
+
                     return (
                       <tr key={plan.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/40">
                         <td className="p-3">
@@ -1715,6 +1784,16 @@ export const InstallmentManagementModule: React.FC<InstallmentManagementModulePr
                             {plan.agreementNo}
                           </span>
                           <div className="text-[10px] text-slate-400">{plan.startDate}</div>
+                        </td>
+
+                        <td className="p-3">
+                          {salesOrderNo ? (
+                            <span className="font-mono font-semibold text-blue-600 dark:text-blue-400">
+                              {salesOrderNo}
+                            </span>
+                          ) : (
+                            <span className="text-slate-400">—</span>
+                          )}
                         </td>
 
                         <td className="p-3">
