@@ -1144,9 +1144,9 @@ export interface CRMLeadAgreement {
   phone?: string;
   address?: string;
   channel?: string;
-  dealValueBDT?: number;
-  estimatedValueBDT?: number;
-  expectedVolumeUnits?: number;
+  dealValueBDT?: number | null;
+  estimatedValueBDT?: number | null;
+  expectedVolumeUnits?: number | null;
   stage?:
     | 'Lead Identified'
     | 'Proposal & Sample'
@@ -1159,7 +1159,7 @@ export interface CRMLeadAgreement {
   salespersonId?: string;
   expectedClosingDate?: string;
   lastContactDate?: string;
-  contractTermMonths?: number;
+  contractTermMonths?: number | null;
   notes?: any[];
   communicationNotes?: any[];
   agreedSpecialDiscountPercent?: number;

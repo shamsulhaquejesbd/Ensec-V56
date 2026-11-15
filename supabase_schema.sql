@@ -1693,10 +1693,10 @@ CREATE TABLE IF NOT EXISTS public.crm_agreements (
   address TEXT,                   -- Customer / Site Address
   channel TEXT DEFAULT 'Direct Corporate', -- 'Direct Corporate' | 'Tender / Institutional' | 'Govt & Semi-Govt' | 'Distributor Network'
   stage TEXT NOT NULL DEFAULT 'Lead', -- 'Lead' | 'Contacted' | 'Proposal Sent' | 'Agreement Signed' | 'Lost'
-  expected_volume_units INT DEFAULT 100,
-  estimated_value_bdt NUMERIC(15, 2) DEFAULT 0.00,
-  deal_value_bdt NUMERIC(15, 2) DEFAULT 0.00,
-  contract_term_months INT DEFAULT 12,
+  expected_volume_units INT DEFAULT NULL,
+  estimated_value_bdt NUMERIC(15, 2) DEFAULT NULL,
+  deal_value_bdt NUMERIC(15, 2) DEFAULT NULL,
+  contract_term_months INT DEFAULT NULL,
   salesperson_id TEXT,
   salesperson_name TEXT NOT NULL DEFAULT 'Tanvir Hossain',
   last_contact_date DATE DEFAULT CURRENT_DATE,
@@ -1718,10 +1718,14 @@ ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS email TEXT;
 ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS address TEXT;
 ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS channel TEXT DEFAULT 'Direct Corporate';
 ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS stage TEXT DEFAULT 'Lead';
-ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS expected_volume_units INT DEFAULT 100;
-ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS estimated_value_bdt NUMERIC(15, 2) DEFAULT 0.00;
-ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS deal_value_bdt NUMERIC(15, 2) DEFAULT 0.00;
-ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS contract_term_months INT DEFAULT 12;
+ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS expected_volume_units INT DEFAULT NULL;
+ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS estimated_value_bdt NUMERIC(15, 2) DEFAULT NULL;
+ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS deal_value_bdt NUMERIC(15, 2) DEFAULT NULL;
+ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS contract_term_months INT DEFAULT NULL;
+ALTER TABLE public.crm_agreements ALTER COLUMN expected_volume_units DROP DEFAULT;
+ALTER TABLE public.crm_agreements ALTER COLUMN estimated_value_bdt DROP DEFAULT;
+ALTER TABLE public.crm_agreements ALTER COLUMN deal_value_bdt DROP DEFAULT;
+ALTER TABLE public.crm_agreements ALTER COLUMN contract_term_months DROP DEFAULT;
 ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS salesperson_id TEXT;
 ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS salesperson_name TEXT DEFAULT 'Tanvir Hossain';
 ALTER TABLE public.crm_agreements ADD COLUMN IF NOT EXISTS last_contact_date DATE DEFAULT CURRENT_DATE;

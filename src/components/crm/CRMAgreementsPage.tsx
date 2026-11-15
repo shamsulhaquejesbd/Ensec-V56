@@ -435,17 +435,26 @@ export const CRMAgreementsPage: React.FC = () => {
         stage = 'Lost';
       }
 
-      // Parse Volume
+      const parseOptionalNumericCell = (rawValue: string): number | null => {
+        const trimmed = (rawValue || '').trim();
+        if (!trimmed) return null;
+        const cleaned = trimmed.replace(/[^0-9.-]/g, '');
+        if (!cleaned || !/\d/.test(cleaned)) return null;
+        const num = Number(cleaned);
+        return Number.isFinite(num) ? num : null;
+      };
+
+      // Parse Volume (keep null if blank)
       const rawVolume = colIndex.volume !== -1 ? row[colIndex.volume] : '';
-      const volumeNum = Number(rawVolume.replace(/[^0-9.]/g, '')) || 100;
+      const volumeNum = parseOptionalNumericCell(rawVolume);
 
-      // Parse Value
+      // Parse Value (keep null if blank)
       const rawValue = colIndex.value !== -1 ? row[colIndex.value] : '';
-      const valueNum = Number(rawValue.replace(/[^0-9.]/g, '')) || 1000000;
+      const valueNum = parseOptionalNumericCell(rawValue);
 
-      // Parse Term
+      // Parse Term (keep null if blank)
       const rawTerm = colIndex.term !== -1 ? row[colIndex.term] : '';
-      const termNum = Number(rawTerm.replace(/[^0-9.]/g, '')) || 12;
+      const termNum = parseOptionalNumericCell(rawTerm);
 
       // Parse Salesperson
       const rawSalesperson = colIndex.salesperson !== -1 ? row[colIndex.salesperson] : '';
@@ -468,6 +477,7 @@ export const CRMAgreementsPage: React.FC = () => {
         stage,
         expectedVolumeUnits: volumeNum,
         estimatedValueBDT: valueNum,
+        dealValueBDT: valueNum,
         contractTermMonths: termNum,
         salespersonId: currentUser?.id || 'u-rep',
         salespersonName,
@@ -677,9 +687,9 @@ export const CRMAgreementsPage: React.FC = () => {
         escapeCSV(deal.phone),
         escapeCSV(deal.address || ''),
         escapeCSV(deal.stage),
-        escapeCSV(deal.expectedVolumeUnits),
-        escapeCSV(deal.estimatedValueBDT),
-        escapeCSV(deal.contractTermMonths),
+        escapeCSV(deal.expectedVolumeUnits ?? ''),
+        escapeCSV(deal.estimatedValueBDT ?? ''),
+        escapeCSV(deal.contractTermMonths ?? ''),
         escapeCSV(deal.salespersonName),
         escapeCSV(deal.lastContactDate || ''),
         escapeCSV(deal.communicationNotes?.length || 0),
@@ -1097,20 +1107,28 @@ export const CRMAgreementsPage: React.FC = () => {
                       <div className="space-y-0.5">
                         <span className="text-[10px] text-slate-400 block font-sans">Volume Target</span>
                         <span className="font-mono font-semibold text-slate-700 dark:text-slate-300">
-                          {deal.expectedVolumeUnits} Units
+                          {deal.expectedVolumeUnits !== null && deal.expectedVolumeUnits !== undefined
+                            ? `${deal.expectedVolumeUnits.toLocaleString()} Units`
+                            : '—'}
                         </span>
                       </div>
                       <div className="text-right space-y-0.5">
                         <span className="text-[10px] text-slate-400 block font-sans">Agreement Value</span>
                         <span className="font-mono font-bold text-blue-600 dark:text-blue-400">
-                          ৳ {deal.estimatedValueBDT.toLocaleString()}
+                          {deal.estimatedValueBDT !== null && deal.estimatedValueBDT !== undefined
+                            ? `৳ ${deal.estimatedValueBDT.toLocaleString()}`
+                            : '—'}
                         </span>
                       </div>
                     </div>
 
                     <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1">
                       <span>👤 {deal.salespersonName}</span>
-                      <span className="text-[10px] font-mono">{deal.contractTermMonths} Mo Term</span>
+                      <span className="text-[10px] font-mono">
+                        {deal.contractTermMonths !== null && deal.contractTermMonths !== undefined
+                          ? `${deal.contractTermMonths} Mo Term`
+                          : '—'}
+                      </span>
                     </div>
                   </div>
                 );
@@ -1176,21 +1194,27 @@ export const CRMAgreementsPage: React.FC = () => {
                 <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-800">
                   <span className="text-[10px] text-slate-400 uppercase font-bold block mb-1">Estimated Value</span>
                   <span className="font-mono font-bold text-sm text-blue-600 dark:text-blue-400">
-                    ৳ {selectedDeal.estimatedValueBDT.toLocaleString()}
+                    {selectedDeal.estimatedValueBDT !== null && selectedDeal.estimatedValueBDT !== undefined
+                      ? `৳ ${selectedDeal.estimatedValueBDT.toLocaleString()}`
+                      : '—'}
                   </span>
                 </div>
 
                 <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-800">
                   <span className="text-[10px] text-slate-400 uppercase font-bold block mb-1">Contract Volume</span>
                   <span className="font-mono font-bold text-sm text-slate-900 dark:text-white">
-                    {selectedDeal.expectedVolumeUnits} Units
+                    {selectedDeal.expectedVolumeUnits !== null && selectedDeal.expectedVolumeUnits !== undefined
+                      ? `${selectedDeal.expectedVolumeUnits.toLocaleString()} Units`
+                      : '—'}
                   </span>
                 </div>
 
                 <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-800">
                   <span className="text-[10px] text-slate-400 uppercase font-bold block mb-1">Contract Term</span>
                   <span className="font-mono font-bold text-sm text-slate-900 dark:text-white">
-                    {selectedDeal.contractTermMonths} Months
+                    {selectedDeal.contractTermMonths !== null && selectedDeal.contractTermMonths !== undefined
+                      ? `${selectedDeal.contractTermMonths} Months`
+                      : '—'}
                   </span>
                 </div>
 
@@ -1568,6 +1592,7 @@ export const CRMAgreementsPage: React.FC = () => {
                         <th className="p-2">Stage</th>
                         <th className="p-2 text-right">Units</th>
                         <th className="p-2 text-right">Value (BDT)</th>
+                        <th className="p-2 text-right">Term (Mo)</th>
                         <th className="p-2">Salesperson</th>
                       </tr>
                     </thead>
@@ -1603,10 +1628,19 @@ export const CRMAgreementsPage: React.FC = () => {
                             </span>
                           </td>
                           <td className="p-2 text-right font-mono font-semibold">
-                            {lead.expectedVolumeUnits}
+                            {lead.expectedVolumeUnits !== null && lead.expectedVolumeUnits !== undefined
+                              ? lead.expectedVolumeUnits.toLocaleString()
+                              : '—'}
                           </td>
                           <td className="p-2 text-right font-mono font-bold text-blue-600 dark:text-blue-400">
-                            ৳ {lead.estimatedValueBDT?.toLocaleString()}
+                            {lead.estimatedValueBDT !== null && lead.estimatedValueBDT !== undefined
+                              ? `৳ ${lead.estimatedValueBDT.toLocaleString()}`
+                              : '—'}
+                          </td>
+                          <td className="p-2 text-right font-mono">
+                            {lead.contractTermMonths !== null && lead.contractTermMonths !== undefined
+                              ? lead.contractTermMonths
+                              : '—'}
                           </td>
                           <td className="p-2 text-slate-500 truncate max-w-[100px]">
                             {lead.salespersonName}

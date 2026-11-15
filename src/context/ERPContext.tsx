@@ -4734,10 +4734,25 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               phone: row.phone || '',
               address: hasRemoteAddressCol ? (row.address || '') : (localAddressMap.get(dealId) || ''),
               stage: (row.stage as any) || 'Lead',
-              expectedVolumeUnits: Number(row.expected_volume_units) || 100,
-              estimatedValueBDT: Number(row.estimated_value_bdt) || 0,
-              dealValueBDT: Number(row.deal_value_bdt || row.estimated_value_bdt) || 0,
-              contractTermMonths: Number(row.contract_term_months) || 12,
+              expectedVolumeUnits:
+                row.expected_volume_units !== null && row.expected_volume_units !== undefined && row.expected_volume_units !== '' && Number.isFinite(Number(row.expected_volume_units))
+                  ? Number(row.expected_volume_units)
+                  : null,
+              estimatedValueBDT:
+                row.estimated_value_bdt !== null && row.estimated_value_bdt !== undefined && row.estimated_value_bdt !== '' && Number.isFinite(Number(row.estimated_value_bdt))
+                  ? Number(row.estimated_value_bdt)
+                  : null,
+              dealValueBDT:
+                (row.deal_value_bdt ?? row.estimated_value_bdt) !== null &&
+                (row.deal_value_bdt ?? row.estimated_value_bdt) !== undefined &&
+                (row.deal_value_bdt ?? row.estimated_value_bdt) !== '' &&
+                Number.isFinite(Number(row.deal_value_bdt ?? row.estimated_value_bdt))
+                  ? Number(row.deal_value_bdt ?? row.estimated_value_bdt)
+                  : null,
+              contractTermMonths:
+                row.contract_term_months !== null && row.contract_term_months !== undefined && row.contract_term_months !== '' && Number.isFinite(Number(row.contract_term_months))
+                  ? Number(row.contract_term_months)
+                  : null,
               salespersonId: row.salesperson_id || '',
               salespersonName: row.salesperson_name || 'Tanvir Hossain',
               lastContactDate: row.last_contact_date ? String(row.last_contact_date).substring(0, 10) : new Date().toISOString().substring(0, 10),
@@ -14142,11 +14157,17 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     addAuditLog(
       'CRM_DEAL_CREATED',
       'CRM & Agreements',
-      `Created corporate lead agreement: ${newDeal.clientName} (Est. ${newDeal.estimatedValueBDT.toLocaleString()} BDT)`
+      `Created corporate lead agreement: ${newDeal.clientName} (Est. ${(newDeal.estimatedValueBDT ?? 0).toLocaleString()} BDT)`
     );
 
     let isRemoteSynced = false;
     let syncError: string | undefined = undefined;
+
+    const toNullableNum = (v: unknown): number | null => {
+      if (v === null || v === undefined || v === '') return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
 
     const sb = getSupabase();
     if (sb) {
@@ -14160,10 +14181,10 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           email: (newDeal as any).email || null,
           channel: (newDeal as any).channel || 'Direct Corporate',
           stage: newDeal.stage || 'Lead',
-          expected_volume_units: Number(newDeal.expectedVolumeUnits) || 100,
-          estimated_value_bdt: Number(newDeal.estimatedValueBDT || newDeal.dealValueBDT) || 0,
-          deal_value_bdt: Number(newDeal.dealValueBDT || newDeal.estimatedValueBDT) || 0,
-          contract_term_months: Number(newDeal.contractTermMonths) || 12,
+          expected_volume_units: toNullableNum(newDeal.expectedVolumeUnits),
+          estimated_value_bdt: toNullableNum(newDeal.estimatedValueBDT ?? newDeal.dealValueBDT),
+          deal_value_bdt: toNullableNum(newDeal.dealValueBDT ?? newDeal.estimatedValueBDT),
+          contract_term_months: toNullableNum(newDeal.contractTermMonths),
           salesperson_id: (newDeal as any).salespersonId || null,
           salesperson_name: newDeal.salespersonName || currentUser.name || 'Tanvir Hossain',
           last_contact_date: newDeal.lastContactDate || new Date().toISOString().substring(0, 10),
@@ -14233,10 +14254,26 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           email: (d as any).email || null,
           channel: (d as any).channel || 'Direct Corporate',
           stage: d.stage || 'Lead',
-          expected_volume_units: Number(d.expectedVolumeUnits) || 100,
-          estimated_value_bdt: Number(d.estimatedValueBDT || d.dealValueBDT) || 0,
-          deal_value_bdt: Number(d.dealValueBDT || d.estimatedValueBDT) || 0,
-          contract_term_months: Number(d.contractTermMonths) || 12,
+          expected_volume_units:
+            d.expectedVolumeUnits !== null && d.expectedVolumeUnits !== undefined && Number.isFinite(Number(d.expectedVolumeUnits))
+              ? Number(d.expectedVolumeUnits)
+              : null,
+          estimated_value_bdt:
+            (d.estimatedValueBDT ?? d.dealValueBDT) !== null &&
+            (d.estimatedValueBDT ?? d.dealValueBDT) !== undefined &&
+            Number.isFinite(Number(d.estimatedValueBDT ?? d.dealValueBDT))
+              ? Number(d.estimatedValueBDT ?? d.dealValueBDT)
+              : null,
+          deal_value_bdt:
+            (d.dealValueBDT ?? d.estimatedValueBDT) !== null &&
+            (d.dealValueBDT ?? d.estimatedValueBDT) !== undefined &&
+            Number.isFinite(Number(d.dealValueBDT ?? d.estimatedValueBDT))
+              ? Number(d.dealValueBDT ?? d.estimatedValueBDT)
+              : null,
+          contract_term_months:
+            d.contractTermMonths !== null && d.contractTermMonths !== undefined && Number.isFinite(Number(d.contractTermMonths))
+              ? Number(d.contractTermMonths)
+              : null,
           salesperson_id: (d as any).salespersonId || null,
           salesperson_name: d.salespersonName || currentUser.name || 'Tanvir Hossain',
           last_contact_date: d.lastContactDate || new Date().toISOString().substring(0, 10),
@@ -14285,10 +14322,26 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         email: (d as any).email || null,
         channel: (d as any).channel || 'Direct Corporate',
         stage: d.stage || 'Lead',
-        expected_volume_units: Number(d.expectedVolumeUnits) || 100,
-        estimated_value_bdt: Number(d.estimatedValueBDT || d.dealValueBDT) || 0,
-        deal_value_bdt: Number(d.dealValueBDT || d.estimatedValueBDT) || 0,
-        contract_term_months: Number(d.contractTermMonths) || 12,
+        expected_volume_units:
+          d.expectedVolumeUnits !== null && d.expectedVolumeUnits !== undefined && Number.isFinite(Number(d.expectedVolumeUnits))
+            ? Number(d.expectedVolumeUnits)
+            : null,
+        estimated_value_bdt:
+          (d.estimatedValueBDT ?? d.dealValueBDT) !== null &&
+          (d.estimatedValueBDT ?? d.dealValueBDT) !== undefined &&
+          Number.isFinite(Number(d.estimatedValueBDT ?? d.dealValueBDT))
+            ? Number(d.estimatedValueBDT ?? d.dealValueBDT)
+            : null,
+        deal_value_bdt:
+          (d.dealValueBDT ?? d.estimatedValueBDT) !== null &&
+          (d.dealValueBDT ?? d.estimatedValueBDT) !== undefined &&
+          Number.isFinite(Number(d.dealValueBDT ?? d.estimatedValueBDT))
+            ? Number(d.dealValueBDT ?? d.estimatedValueBDT)
+            : null,
+        contract_term_months:
+          d.contractTermMonths !== null && d.contractTermMonths !== undefined && Number.isFinite(Number(d.contractTermMonths))
+            ? Number(d.contractTermMonths)
+            : null,
         salesperson_id: (d as any).salespersonId || null,
         salesperson_name: d.salespersonName || currentUser.name || 'Tanvir Hossain',
         last_contact_date: d.lastContactDate || new Date().toISOString().substring(0, 10),
@@ -14352,10 +14405,10 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           companyName: dealCodeStr,
           phone: '+880 1700-000000',
           stage: 'Lead',
-          expectedVolumeUnits: 100,
-          estimatedValueBDT: 0,
-          dealValueBDT: 0,
-          contractTermMonths: 12,
+          expectedVolumeUnits: null,
+          estimatedValueBDT: null,
+          dealValueBDT: null,
+          contractTermMonths: null,
           salespersonName: currentUser.name || 'Tanvir Hossain',
           lastContactDate: noteObj.date,
           communicationNotes: updatedNotes,
@@ -14437,10 +14490,26 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               email: (updatedDeal as any).email || null,
               channel: (updatedDeal as any).channel || 'Direct Corporate',
               stage: updatedDeal.stage || 'Lead',
-              expected_volume_units: Number(updatedDeal.expectedVolumeUnits) || 100,
-              estimated_value_bdt: Number(updatedDeal.estimatedValueBDT || updatedDeal.dealValueBDT) || 0,
-              deal_value_bdt: Number(updatedDeal.dealValueBDT || updatedDeal.estimatedValueBDT) || 0,
-              contract_term_months: Number(updatedDeal.contractTermMonths) || 12,
+              expected_volume_units:
+                updatedDeal.expectedVolumeUnits !== null && updatedDeal.expectedVolumeUnits !== undefined && Number.isFinite(Number(updatedDeal.expectedVolumeUnits))
+                  ? Number(updatedDeal.expectedVolumeUnits)
+                  : null,
+              estimated_value_bdt:
+                (updatedDeal.estimatedValueBDT ?? updatedDeal.dealValueBDT) !== null &&
+                (updatedDeal.estimatedValueBDT ?? updatedDeal.dealValueBDT) !== undefined &&
+                Number.isFinite(Number(updatedDeal.estimatedValueBDT ?? updatedDeal.dealValueBDT))
+                  ? Number(updatedDeal.estimatedValueBDT ?? updatedDeal.dealValueBDT)
+                  : null,
+              deal_value_bdt:
+                (updatedDeal.dealValueBDT ?? updatedDeal.estimatedValueBDT) !== null &&
+                (updatedDeal.dealValueBDT ?? updatedDeal.estimatedValueBDT) !== undefined &&
+                Number.isFinite(Number(updatedDeal.dealValueBDT ?? updatedDeal.estimatedValueBDT))
+                  ? Number(updatedDeal.dealValueBDT ?? updatedDeal.estimatedValueBDT)
+                  : null,
+              contract_term_months:
+                updatedDeal.contractTermMonths !== null && updatedDeal.contractTermMonths !== undefined && Number.isFinite(Number(updatedDeal.contractTermMonths))
+                  ? Number(updatedDeal.contractTermMonths)
+                  : null,
               salesperson_name: updatedDeal.salespersonName || currentUser.name || 'Tanvir Hossain',
               last_contact_date: noteObj.date,
               communication_notes: updatedNotes,
@@ -14502,10 +14571,10 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           companyName: dealCodeStr,
           phone: '+880 1700-000000',
           stage,
-          expectedVolumeUnits: 100,
-          estimatedValueBDT: 0,
-          dealValueBDT: 0,
-          contractTermMonths: 12,
+          expectedVolumeUnits: null,
+          estimatedValueBDT: null,
+          dealValueBDT: null,
+          contractTermMonths: null,
           salespersonName: currentUser.name || 'Tanvir Hossain',
           lastContactDate: noteObj.date,
           communicationNotes: updatedNotes,
