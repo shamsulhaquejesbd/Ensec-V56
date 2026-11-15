@@ -2152,8 +2152,23 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const stored = localStorage.getItem('ensec_office_locations');
         if (stored) {
           const parsed = JSON.parse(stored);
-          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            if (localStorage.getItem('ensec_geofence_radius_200_v1') !== 'true') {
+              const migrated = parsed.map((loc: OfficeLocation) => ({
+                ...loc,
+                allowedRadiusMeters:
+                  !loc.allowedRadiusMeters || loc.allowedRadiusMeters === 50
+                    ? DEFAULT_ALLOWED_RADIUS_METERS
+                    : loc.allowedRadiusMeters,
+              }));
+              localStorage.setItem('ensec_office_locations', JSON.stringify(migrated));
+              localStorage.setItem('ensec_geofence_radius_200_v1', 'true');
+              return migrated;
+            }
+            return parsed;
+          }
         }
+        localStorage.setItem('ensec_geofence_radius_200_v1', 'true');
       } catch (e) {}
     }
     return DEFAULT_OFFICE_LOCATIONS;

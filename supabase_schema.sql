@@ -3505,7 +3505,7 @@ CREATE TABLE IF NOT EXISTS public.office_locations (
   address TEXT NOT NULL,
   latitude NUMERIC(10, 7) NOT NULL,
   longitude NUMERIC(10, 7) NOT NULL,
-  allowed_radius_meters INT NOT NULL DEFAULT 50,
+  allowed_radius_meters INT NOT NULL DEFAULT 200,
   status TEXT NOT NULL DEFAULT 'Active',
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -3516,7 +3516,7 @@ ALTER TABLE public.field_force_reps ADD COLUMN IF NOT EXISTS assigned_office_id 
 ALTER TABLE public.field_force_reps ADD COLUMN IF NOT EXISTS assigned_office_name TEXT;
 ALTER TABLE public.field_force_reps ADD COLUMN IF NOT EXISTS office_latitude NUMERIC(10, 7);
 ALTER TABLE public.field_force_reps ADD COLUMN IF NOT EXISTS office_longitude NUMERIC(10, 7);
-ALTER TABLE public.field_force_reps ADD COLUMN IF NOT EXISTS allowed_radius_meters INT DEFAULT 50;
+ALTER TABLE public.field_force_reps ADD COLUMN IF NOT EXISTS allowed_radius_meters INT DEFAULT 200;
 ALTER TABLE public.field_force_reps ADD COLUMN IF NOT EXISTS office_address TEXT;
 ALTER TABLE public.field_force_reps ADD COLUMN IF NOT EXISTS location_status TEXT DEFAULT 'Active';
 ALTER TABLE public.field_force_reps ADD COLUMN IF NOT EXISTS shift_start_time TEXT DEFAULT '09:00';
@@ -3530,7 +3530,7 @@ ALTER TABLE public.employee_attendances ADD COLUMN IF NOT EXISTS assigned_office
 ALTER TABLE public.employee_attendances ADD COLUMN IF NOT EXISTS assigned_office_name TEXT;
 ALTER TABLE public.employee_attendances ADD COLUMN IF NOT EXISTS office_latitude NUMERIC(10, 7);
 ALTER TABLE public.employee_attendances ADD COLUMN IF NOT EXISTS office_longitude NUMERIC(10, 7);
-ALTER TABLE public.employee_attendances ADD COLUMN IF NOT EXISTS allowed_radius_meters INT DEFAULT 50;
+ALTER TABLE public.employee_attendances ADD COLUMN IF NOT EXISTS allowed_radius_meters INT DEFAULT 200;
 ALTER TABLE public.employee_attendances ADD COLUMN IF NOT EXISTS check_in_latitude NUMERIC(10, 7);
 ALTER TABLE public.employee_attendances ADD COLUMN IF NOT EXISTS check_in_longitude NUMERIC(10, 7);
 ALTER TABLE public.employee_attendances ADD COLUMN IF NOT EXISTS check_in_distance_meters NUMERIC(10, 2);
@@ -3565,7 +3565,7 @@ CREATE TABLE IF NOT EXISTS public.attendance_rejected_attempts (
   assigned_office_name TEXT,
   office_latitude NUMERIC(10, 7),
   office_longitude NUMERIC(10, 7),
-  allowed_radius_meters INT NOT NULL DEFAULT 50,
+  allowed_radius_meters INT NOT NULL DEFAULT 200,
   attempt_type TEXT NOT NULL, -- 'Check In' | 'Check Out'
   attendance_date DATE NOT NULL DEFAULT CURRENT_DATE,
   attempt_time TEXT NOT NULL,

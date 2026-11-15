@@ -129,7 +129,7 @@ export interface OfficeLocation {
   address: string;
   latitude: number;
   longitude: number;
-  allowedRadiusMeters: number; // Default: 50
+  allowedRadiusMeters: number; // Default: 200
   status: 'Active' | 'Inactive';
   createdAt?: string;
   updatedAt?: string;

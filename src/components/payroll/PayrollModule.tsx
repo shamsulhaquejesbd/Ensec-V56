@@ -3710,7 +3710,7 @@ export const PayrollModule: React.FC = () => {
                 <p className="text-[11px] text-slate-500 mt-0.5">
                   {historyEmployee.department || 'Operations'} • {historyEmployee.designation || 'Executive'} • Office:{' '}
                   {historyEmployee.assignedOfficeName || historyEmployee.branchWorkplace || 'Head Office'} (
-                  {historyEmployee.allowedRadiusMeters ?? 50}m radius)
+                  {historyEmployee.allowedRadiusMeters ?? 200}m radius)
                 </p>
               </div>
               <button

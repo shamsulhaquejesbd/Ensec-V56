@@ -1272,7 +1272,7 @@ export interface FieldForceRep {
   assignedOfficeName?: string;
   officeLatitude?: number;
   officeLongitude?: number;
-  allowedRadiusMeters?: number; // Default 50m
+  allowedRadiusMeters?: number; // Default 200m
   officeAddress?: string;
   locationStatus?: 'Active' | 'Inactive';
   shiftStartTime?: string; // HH:mm default '09:00'

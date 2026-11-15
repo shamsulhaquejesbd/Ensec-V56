@@ -2888,7 +2888,7 @@ export const FieldForcePage: React.FC = () => {
                         onChange={(e) => setFormAllowedRadiusMeters(Math.max(10, Number(e.target.value) || DEFAULT_ALLOWED_RADIUS_METERS))}
                         className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono font-bold tabular-nums"
                       />
-                      <span className="text-[10px] text-slate-400">Default: 50 Meters</span>
+                      <span className="text-[10px] text-slate-400">Default: 200 Meters</span>
                     </div>
 
                     <div className="sm:col-span-2 lg:col-span-3">
@@ -4309,7 +4309,7 @@ export const FieldForcePage: React.FC = () => {
                         onChange={(e) => setFormAllowedRadiusMeters(Math.max(10, Number(e.target.value) || DEFAULT_ALLOWED_RADIUS_METERS))}
                         className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono font-bold tabular-nums"
                       />
-                      <span className="text-[10px] text-slate-400">Default: 50 Meters</span>
+                      <span className="text-[10px] text-slate-400">Default: 200 Meters</span>
                     </div>
 
                     <div className="sm:col-span-2 lg:col-span-3">
@@ -4543,7 +4543,7 @@ export const FieldForcePage: React.FC = () => {
                     Office GPS Geofence Locations Master
                   </h2>
                   <p className="text-xs text-slate-500">
-                    Configure multiple office coordinates &amp; allowed attendance radius (Default: 50 Meters).
+                    Configure multiple office coordinates &amp; allowed attendance radius (Default: 200 Meters).
                   </p>
                 </div>
               </div>

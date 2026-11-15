@@ -8,7 +8,7 @@
 
 import type { AttendanceStatus, OfficeLocation } from '../types/payroll.ts';
 
-export const DEFAULT_ALLOWED_RADIUS_METERS = 50;
+export const DEFAULT_ALLOWED_RADIUS_METERS = 200;
 export const DEFAULT_MAX_GPS_ACCURACY_METERS = 100;
 export const DEFAULT_SHIFT_START_TIME = '09:00';
 export const DEFAULT_SHIFT_END_TIME = '18:00';
@@ -22,7 +22,7 @@ export const DEFAULT_OFFICE_LOCATIONS: OfficeLocation[] = [
     address: 'House 14, Road 11, Gulshan-1, Dhaka-1212',
     latitude: 23.8103,
     longitude: 90.4125,
-    allowedRadiusMeters: 50,
+    allowedRadiusMeters: 200,
     status: 'Active',
   },
   {
@@ -32,7 +32,7 @@ export const DEFAULT_OFFICE_LOCATIONS: OfficeLocation[] = [
     address: 'House 9, Avenue 3, Mirpur DOHS, Dhaka-1216',
     latitude: 23.8041,
     longitude: 90.3667,
-    allowedRadiusMeters: 50,
+    allowedRadiusMeters: 200,
     status: 'Active',
   },
   {
@@ -42,7 +42,7 @@ export const DEFAULT_OFFICE_LOCATIONS: OfficeLocation[] = [
     address: 'Plot 28, BSCIC Industrial Area, Kushtia',
     latitude: 23.9013,
     longitude: 89.1204,
-    allowedRadiusMeters: 50,
+    allowedRadiusMeters: 200,
     status: 'Active',
   },
   {
@@ -52,7 +52,7 @@ export const DEFAULT_OFFICE_LOCATIONS: OfficeLocation[] = [
     address: 'Agrabad Commercial Area, Chattogram',
     latitude: 22.3335,
     longitude: 91.8123,
-    allowedRadiusMeters: 50,
+    allowedRadiusMeters: 200,
     status: 'Active',
   },
 ];

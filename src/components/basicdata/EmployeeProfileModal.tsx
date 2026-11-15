@@ -723,7 +723,7 @@ export const EmployeeProfileModal: React.FC<EmployeeProfileModalProps> = ({
                   <div>
                     <span className="text-[10px] uppercase text-slate-400 block">Allowed Radius</span>
                     <span className="font-bold text-emerald-600 dark:text-emerald-400">
-                      {employee.allowedRadiusMeters || 50} Meters
+                      {employee.allowedRadiusMeters || 200} Meters
                     </span>
                   </div>
                 </div>
