@@ -135,6 +135,7 @@ export const FieldForcePage: React.FC = () => {
     addOfficeLocation,
     updateOfficeLocation,
     deleteOfficeLocation,
+    refreshOfficeLocations,
   } = useERP();
 
   // Search and Filtering State
@@ -191,6 +192,17 @@ export const FieldForcePage: React.FC = () => {
   const [officeFormRadius, setOfficeFormRadius] = useState<number>(DEFAULT_ALLOWED_RADIUS_METERS);
   const [officeFormStatus, setOfficeFormStatus] = useState<'Active' | 'Inactive'>('Active');
   const [officeFormNotice, setOfficeFormNotice] = useState<string>('');
+  const [officeNoticeType, setOfficeNoticeType] = useState<'success' | 'error'>('success');
+  const [isSavingOffice, setIsSavingOffice] = useState<boolean>(false);
+
+  const getNextOfficeCode = (locs: OfficeLocation[]): string => {
+    const existingCodes = new Set(locs.map((l) => (l.code || '').trim().toUpperCase()).filter(Boolean));
+    let idx = locs.length + 1;
+    while (existingCodes.has(`OFF-${String(idx).padStart(2, '0')}`)) {
+      idx += 1;
+    }
+    return `OFF-${String(idx).padStart(2, '0')}`;
+  };
 
   // Quick Tag TADA Approver Modal State (Super Admin Action)
   const [repToTagTadaApprover, setRepToTagTadaApprover] = useState<FieldForceRep | null>(null);
@@ -941,7 +953,7 @@ export const FieldForcePage: React.FC = () => {
             type="button"
             onClick={() => {
               setEditingOfficeId(null);
-              setOfficeFormCode(`OFF-${String(officeLocations.length + 1).padStart(2, '0')}`);
+              setOfficeFormCode(getNextOfficeCode(officeLocations));
               setOfficeFormName('');
               setOfficeFormAddress('');
               setOfficeFormLat('23.8103');
@@ -949,7 +961,9 @@ export const FieldForcePage: React.FC = () => {
               setOfficeFormRadius(DEFAULT_ALLOWED_RADIUS_METERS);
               setOfficeFormStatus('Active');
               setOfficeFormNotice('');
+              setOfficeNoticeType('success');
               setShowOfficeSetupModal(true);
+              refreshOfficeLocations?.();
             }}
             className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-colors shadow-2xs"
           >
@@ -4544,8 +4558,18 @@ export const FieldForcePage: React.FC = () => {
 
             <div className="p-6 overflow-y-auto space-y-6 flex-1 text-xs">
               {officeFormNotice && (
-                <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200 font-semibold flex items-center gap-2">
-                  <CheckCircle2 className="w-4 h-4 shrink-0" />
+                <div
+                  className={`p-3 rounded-xl border font-semibold flex items-center gap-2 ${
+                    officeNoticeType === 'error'
+                      ? 'bg-rose-50 dark:bg-rose-950/60 border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200'
+                      : 'bg-emerald-50 dark:bg-emerald-950/60 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200'
+                  }`}
+                >
+                  {officeNoticeType === 'error' ? (
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                  ) : (
+                    <CheckCircle2 className="w-4 h-4 shrink-0" />
+                  )}
                   <span>{officeFormNotice}</span>
                 </div>
               )}
@@ -4557,38 +4581,80 @@ export const FieldForcePage: React.FC = () => {
                   const lat = Number(officeFormLat);
                   const lng = Number(officeFormLng);
                   if (!officeFormName.trim() || !isValidCoordinatePair(lat, lng)) {
+                    setOfficeNoticeType('error');
                     setOfficeFormNotice('Please enter a valid office name, latitude (-90..90), and longitude (-180..180).');
                     return;
                   }
-                  if (editingOfficeId) {
-                    await updateOfficeLocation(editingOfficeId, {
-                      code: officeFormCode.trim() || undefined,
-                      name: officeFormName.trim(),
-                      address: officeFormAddress.trim(),
-                      latitude: lat,
-                      longitude: lng,
-                      allowedRadiusMeters: Number(officeFormRadius) > 0 ? Number(officeFormRadius) : DEFAULT_ALLOWED_RADIUS_METERS,
-                      status: officeFormStatus,
-                    });
-                    setOfficeFormNotice(`Updated office "${officeFormName.trim()}" and synced assigned employees.`);
-                    setEditingOfficeId(null);
-                  } else {
-                    await addOfficeLocation({
-                      code: officeFormCode.trim() || undefined,
-                      name: officeFormName.trim(),
-                      address: officeFormAddress.trim(),
-                      latitude: lat,
-                      longitude: lng,
-                      allowedRadiusMeters: Number(officeFormRadius) > 0 ? Number(officeFormRadius) : DEFAULT_ALLOWED_RADIUS_METERS,
-                      status: officeFormStatus,
-                    });
-                    setOfficeFormNotice(`Added new office geofence "${officeFormName.trim()}".`);
+                  setIsSavingOffice(true);
+                  setOfficeFormNotice('');
+                  try {
+                    const radius =
+                      Number(officeFormRadius) > 0
+                        ? Number(officeFormRadius)
+                        : DEFAULT_ALLOWED_RADIUS_METERS;
+                    const trimmedName = officeFormName.trim();
+                    const trimmedCode = officeFormCode.trim() || undefined;
+                    const trimmedAddress = officeFormAddress.trim();
+
+                    if (editingOfficeId) {
+                      const res = await updateOfficeLocation(editingOfficeId, {
+                        code: trimmedCode,
+                        name: trimmedName,
+                        address: trimmedAddress,
+                        latitude: lat,
+                        longitude: lng,
+                        allowedRadiusMeters: radius,
+                        status: officeFormStatus,
+                      });
+                      if (!res.success) {
+                        setOfficeNoticeType('error');
+                        setOfficeFormNotice(res.error || 'Failed to update office location in Supabase.');
+                        return;
+                      }
+                      setOfficeNoticeType('success');
+                      setOfficeFormNotice(`Updated office "${trimmedName}" in Supabase and synced assigned employees.`);
+                      setEditingOfficeId(null);
+                      setOfficeFormCode(getNextOfficeCode(officeLocations));
+                    } else {
+                      const res = await addOfficeLocation({
+                        code: trimmedCode,
+                        name: trimmedName,
+                        address: trimmedAddress,
+                        latitude: lat,
+                        longitude: lng,
+                        allowedRadiusMeters: radius,
+                        status: officeFormStatus,
+                      });
+                      if (!res.success) {
+                        setOfficeNoticeType('error');
+                        setOfficeFormNotice(res.error || 'Failed to save office location to Supabase.');
+                        return;
+                      }
+                      setOfficeNoticeType('success');
+                      setOfficeFormNotice(`Saved new office geofence "${trimmedName}" to Supabase.`);
+                      setOfficeFormCode(
+                        getNextOfficeCode([
+                          ...officeLocations,
+                          {
+                            id: res.id,
+                            code: trimmedCode,
+                            name: trimmedName,
+                            address: trimmedAddress,
+                            latitude: lat,
+                            longitude: lng,
+                            allowedRadiusMeters: radius,
+                            status: officeFormStatus,
+                          },
+                        ])
+                      );
+                    }
+                    setOfficeFormName('');
+                    setOfficeFormAddress('');
+                    setOfficeFormRadius(DEFAULT_ALLOWED_RADIUS_METERS);
+                    setOfficeFormStatus('Active');
+                  } finally {
+                    setIsSavingOffice(false);
                   }
-                  setOfficeFormCode(`OFF-${String(officeLocations.length + 2).padStart(2, '0')}`);
-                  setOfficeFormName('');
-                  setOfficeFormAddress('');
-                  setOfficeFormRadius(DEFAULT_ALLOWED_RADIUS_METERS);
-                  setOfficeFormStatus('Active');
                 }}
                 className="p-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50/60 dark:bg-slate-800/30 space-y-4"
               >
@@ -4729,10 +4795,17 @@ export const FieldForcePage: React.FC = () => {
                   )}
                   <button
                     type="submit"
-                    className="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold inline-flex items-center gap-1.5"
+                    disabled={isSavingOffice}
+                    className="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-bold inline-flex items-center gap-1.5"
                   >
                     <Save className="w-3.5 h-3.5" />
-                    <span>{editingOfficeId ? 'Update Office Coordinates' : 'Add Office Location'}</span>
+                    <span>
+                      {isSavingOffice
+                        ? 'Saving to Supabase...'
+                        : editingOfficeId
+                          ? 'Update Office Coordinates'
+                          : 'Add Office Location'}
+                    </span>
                   </button>
                 </div>
               </form>
@@ -4804,7 +4877,21 @@ export const FieldForcePage: React.FC = () => {
                               </button>
                               <button
                                 type="button"
-                                onClick={() => deleteOfficeLocation(loc.id)}
+                                onClick={async () => {
+                                  const res = await deleteOfficeLocation(loc.id);
+                                  if (res && !res.success) {
+                                    setOfficeNoticeType('error');
+                                    setOfficeFormNotice(res.error || 'Failed to delete office location from Supabase.');
+                                    return;
+                                  }
+                                  if (editingOfficeId === loc.id) {
+                                    setEditingOfficeId(null);
+                                    setOfficeFormName('');
+                                    setOfficeFormAddress('');
+                                  }
+                                  setOfficeNoticeType('success');
+                                  setOfficeFormNotice(`Removed office location "${loc.name}" from Supabase.`);
+                                }}
                                 className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40"
                                 title="Delete Office Location"
                               >

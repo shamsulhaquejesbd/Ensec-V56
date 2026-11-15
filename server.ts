@@ -295,7 +295,31 @@ export function createAppServer() {
   // --------------------------------------------------------------------------
   // Office Locations CRUD
   // --------------------------------------------------------------------------
-  app.get('/api/office-locations', (_req, res) => {
+  app.get('/api/office-locations', async (_req, res) => {
+    if (serverSupabase) {
+      try {
+        const { data, error } = await serverSupabase
+          .from('office_locations')
+          .select('*')
+          .order('created_at', { ascending: true });
+        if (!error && Array.isArray(data) && data.length > 0) {
+          for (const row of data) {
+            officeLocationsStore.set(String(row.id), {
+              id: String(row.id),
+              code: row.code || undefined,
+              name: row.name || 'Office Location',
+              address: row.address || '',
+              latitude: Number(row.latitude),
+              longitude: Number(row.longitude),
+              allowedRadiusMeters: Number(row.allowed_radius_meters) || DEFAULT_ALLOWED_RADIUS_METERS,
+              status: row.status === 'Inactive' ? 'Inactive' : 'Active',
+              createdAt: row.created_at,
+              updatedAt: row.updated_at,
+            });
+          }
+        }
+      } catch {}
+    }
     res.json({ locations: Array.from(officeLocationsStore.values()) });
   });
 
@@ -319,40 +343,45 @@ export function createAppServer() {
   });
 
   app.post('/api/office-locations', async (req, res) => {
-    const { id, code, name, address, latitude, longitude, allowedRadiusMeters, status } = req.body || {};
+    const { id, code, name, address, latitude, longitude, allowedRadiusMeters, status, skipSupabaseSync } = req.body || {};
     const lat = Number(latitude);
     const lng = Number(longitude);
     if (!name || !isValidCoordinatePair(lat, lng)) {
       return res.status(400).json({ error: 'Valid office name, latitude, and longitude are required.' });
     }
+    const nowIso = new Date().toISOString();
+    const normalizedCode = code && String(code).trim() ? String(code).trim() : undefined;
     const loc: OfficeLocation = {
       id: id ? String(id) : `office-${Date.now().toString().slice(-6)}`,
-      code: code ? String(code) : `OFF-${Date.now().toString().slice(-4)}`,
+      code: normalizedCode,
       name: String(name).trim(),
       address: String(address || '').trim(),
       latitude: lat,
       longitude: lng,
       allowedRadiusMeters: Number(allowedRadiusMeters) > 0 ? Number(allowedRadiusMeters) : DEFAULT_ALLOWED_RADIUS_METERS,
       status: status === 'Inactive' ? 'Inactive' : 'Active',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      createdAt: nowIso,
+      updatedAt: nowIso,
     };
     officeLocationsStore.set(loc.id, loc);
-    if (serverSupabase) {
-      try {
-        await serverSupabase.from('office_locations').upsert({
+    if (serverSupabase && !skipSupabaseSync) {
+      const { error } = await serverSupabase.from('office_locations').upsert(
+        {
           id: loc.id,
-          code: loc.code,
+          code: loc.code || null,
           name: loc.name,
           address: loc.address,
           latitude: loc.latitude,
           longitude: loc.longitude,
           allowed_radius_meters: loc.allowedRadiusMeters,
           status: loc.status,
+          created_at: nowIso,
           updated_at: loc.updatedAt,
-        });
-      } catch {
-        // Ignore if table not created yet
+        },
+        { onConflict: 'id' }
+      );
+      if (error) {
+        return res.status(400).json({ error: error.message });
       }
     }
     return res.status(201).json({ location: loc });
@@ -367,9 +396,15 @@ export function createAppServer() {
     if (!isValidCoordinatePair(lat, lng)) {
       return res.status(400).json({ error: 'Valid office latitude and longitude are required.' });
     }
+    const normalizedCode =
+      body.code !== undefined
+        ? body.code && String(body.code).trim()
+          ? String(body.code).trim()
+          : undefined
+        : existing?.code;
     const updated: OfficeLocation = {
       id: locId,
-      code: body.code ?? existing?.code,
+      code: normalizedCode,
       name: String(body.name ?? existing?.name ?? 'Office Location').trim(),
       address: String(body.address ?? existing?.address ?? '').trim(),
       latitude: lat!,
@@ -381,11 +416,11 @@ export function createAppServer() {
       updatedAt: new Date().toISOString(),
     };
     officeLocationsStore.set(locId, updated);
-    if (serverSupabase) {
-      try {
-        await serverSupabase.from('office_locations').upsert({
+    if (serverSupabase && !body.skipSupabaseSync) {
+      const { error } = await serverSupabase.from('office_locations').upsert(
+        {
           id: updated.id,
-          code: updated.code,
+          code: updated.code || null,
           name: updated.name,
           address: updated.address,
           latitude: updated.latitude,
@@ -393,9 +428,11 @@ export function createAppServer() {
           allowed_radius_meters: updated.allowedRadiusMeters,
           status: updated.status,
           updated_at: updated.updatedAt,
-        });
-      } catch {
-        // Ignore if table not created yet
+        },
+        { onConflict: 'id' }
+      );
+      if (error) {
+        return res.status(400).json({ error: error.message });
       }
     }
     return res.json({ location: updated });
@@ -404,10 +441,11 @@ export function createAppServer() {
   app.delete('/api/office-locations/:id', async (req, res) => {
     const locId = String(req.params.id);
     officeLocationsStore.delete(locId);
-    if (serverSupabase) {
-      try {
-        await serverSupabase.from('office_locations').delete().eq('id', locId);
-      } catch {}
+    if (serverSupabase && req.query.skipSupabaseSync !== '1') {
+      const { error } = await serverSupabase.from('office_locations').delete().eq('id', locId);
+      if (error) {
+        return res.status(400).json({ error: error.message });
+      }
     }
     res.json({ deleted: true, id: locId });
   });

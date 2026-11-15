@@ -692,7 +692,7 @@ interface ERPContextType {
   officeLocations: OfficeLocation[];
   addOfficeLocation: (loc: Omit<OfficeLocation, 'id'>) => Promise<{ success: boolean; id: string; error?: string }>;
   updateOfficeLocation: (id: string, updates: Partial<OfficeLocation>) => Promise<{ success: boolean; error?: string }>;
-  deleteOfficeLocation: (id: string) => Promise<void>;
+  deleteOfficeLocation: (id: string) => Promise<{ success: boolean; error?: string } | void>;
   refreshOfficeLocations?: () => Promise<void>;
 
   attendanceRecords: AttendanceRecord[];
@@ -4121,22 +4121,56 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const { data, error } = await sb
           .from('office_locations')
           .select('*')
-          .order('id', { ascending: true });
-        if (!error && Array.isArray(data) && data.length > 0) {
-          const mapped: OfficeLocation[] = data.map((row: any) => ({
-            id: String(row.id),
-            code: row.code || undefined,
-            name: row.name || 'Office Location',
-            address: row.address || '',
-            latitude: Number(row.latitude),
-            longitude: Number(row.longitude),
-            allowedRadiusMeters: Number(row.allowed_radius_meters) || DEFAULT_ALLOWED_RADIUS_METERS,
-            status: row.status === 'Inactive' ? 'Inactive' : 'Active',
-            createdAt: row.created_at,
-            updatedAt: row.updated_at,
-          }));
-          setOfficeLocations(mapped);
-          return;
+          .order('created_at', { ascending: true });
+        if (!error && Array.isArray(data)) {
+          if (data.length > 0) {
+            const mapped: OfficeLocation[] = data.map((row: any) => ({
+              id: String(row.id),
+              code: row.code || undefined,
+              name: row.name || 'Office Location',
+              address: row.address || '',
+              latitude: Number(row.latitude),
+              longitude: Number(row.longitude),
+              allowedRadiusMeters: Number(row.allowed_radius_meters) || DEFAULT_ALLOWED_RADIUS_METERS,
+              status: row.status === 'Inactive' ? 'Inactive' : 'Active',
+              createdAt: row.created_at,
+              updatedAt: row.updated_at,
+            }));
+            setOfficeLocations(mapped);
+            if (typeof window !== 'undefined') {
+              localStorage.setItem('ensec_office_locations_seeded_v1', 'true');
+            }
+            return;
+          }
+
+          // Table exists but has 0 rows: seed current local/default offices once so edits & new additions stay consistent
+          const alreadySeeded =
+            typeof window !== 'undefined' &&
+            localStorage.getItem('ensec_office_locations_seeded_v1') === 'true';
+          if (!alreadySeeded) {
+            const nowIso = new Date().toISOString();
+            const initialLocations = officeLocations.length > 0 ? officeLocations : DEFAULT_OFFICE_LOCATIONS;
+            const seedRows = initialLocations.map((loc) => ({
+              id: loc.id,
+              code: loc.code?.trim() || null,
+              name: loc.name,
+              address: loc.address || '',
+              latitude: Number(loc.latitude),
+              longitude: Number(loc.longitude),
+              allowed_radius_meters: Number(loc.allowedRadiusMeters) || DEFAULT_ALLOWED_RADIUS_METERS,
+              status: loc.status === 'Inactive' ? 'Inactive' : 'Active',
+              created_at: loc.createdAt || nowIso,
+              updated_at: loc.updatedAt || nowIso,
+            }));
+            if (seedRows.length > 0) {
+              const { error: seedError } = await sb
+                .from('office_locations')
+                .upsert(seedRows, { onConflict: 'id', ignoreDuplicates: true });
+              if (!seedError && typeof window !== 'undefined') {
+                localStorage.setItem('ensec_office_locations_seeded_v1', 'true');
+              }
+            }
+          }
         }
       } catch {
         // Ignore if table not yet created in Supabase
@@ -6044,6 +6078,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     let soChannel: any = null;
     let bomChannel: any = null;
     let poChannel: any = null;
+    let officeChannel: any = null;
 
     if (sb && typeof sb.channel === 'function') {
       try {
@@ -6267,6 +6302,17 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             }
           )
           .subscribe();
+
+        officeChannel = sb
+          .channel('realtime:office_locations')
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'office_locations' },
+            () => {
+              refreshOfficeLocations();
+            }
+          )
+          .subscribe();
       } catch (err) {
         console.warn('Supabase Realtime subscription notice:', err);
       }
@@ -6302,6 +6348,9 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
         if (poChannel && sb && typeof sb.removeChannel === 'function') {
           sb.removeChannel(poChannel);
+        }
+        if (officeChannel && sb && typeof sb.removeChannel === 'function') {
+          sb.removeChannel(officeChannel);
         }
       };
     }
@@ -18232,51 +18281,153 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return salaryStructures.find((s) => s.employeeId === employeeId);
   };
 
+  const formatOfficeLocationSupabaseError = (error: any): string => {
+    const rawMsg = String(error?.message || 'Unknown Supabase error');
+    const code = String(error?.code || '');
+    if (code === '23505' || rawMsg.toLowerCase().includes('duplicate key')) {
+      return 'An office location with this Office Code already exists in Supabase. Please use a unique Office Code.';
+    }
+    if (code === '42P01' || rawMsg.includes('relation "public.office_locations" does not exist') || rawMsg.includes('office_locations')) {
+      return 'Supabase table "office_locations" does not exist yet. Please run the Office Locations SQL script from supabase_schema.sql.';
+    }
+    if (code === '42501' || rawMsg.toLowerCase().includes('row-level security') || rawMsg.toLowerCase().includes('permission denied')) {
+      return `Supabase RLS/permission blocked saving office_locations: ${rawMsg}`;
+    }
+    return `Failed to save office location to Supabase: ${rawMsg}`;
+  };
+
   const addOfficeLocation = async (
     locData: Omit<OfficeLocation, 'id'>
   ): Promise<{ success: boolean; id: string; error?: string }> => {
-    const id = `office-${Date.now().toString().slice(-6)}`;
+    const normalizedName = (locData.name || '').trim();
+    const normalizedCode = locData.code ? locData.code.trim() : undefined;
+    const normalizedAddress = (locData.address || '').trim();
+    const lat = Number(locData.latitude);
+    const lng = Number(locData.longitude);
+
+    if (!normalizedName || !Number.isFinite(lat) || !Number.isFinite(lng)) {
+      return {
+        success: false,
+        id: '',
+        error: 'Valid office name, latitude, and longitude are required.',
+      };
+    }
+
+    if (
+      normalizedCode &&
+      officeLocations.some(
+        (loc) => (loc.code || '').trim().toLowerCase() === normalizedCode.toLowerCase()
+      )
+    ) {
+      return {
+        success: false,
+        id: '',
+        error: `Office Code "${normalizedCode}" is already assigned to another office location.`,
+      };
+    }
+
+    const id = `office-${Date.now().toString().slice(-6)}-${Math.random().toString(36).slice(2, 5)}`;
     const nowIso = new Date().toISOString();
     const newLoc: OfficeLocation = {
       ...locData,
       id,
+      code: normalizedCode,
+      name: normalizedName,
+      address: normalizedAddress,
+      latitude: lat,
+      longitude: lng,
       allowedRadiusMeters:
         Number(locData.allowedRadiusMeters) > 0
-          ? Number(locData.allowedRadiusMeters)
+          ? Math.round(Number(locData.allowedRadiusMeters))
           : DEFAULT_ALLOWED_RADIUS_METERS,
       status: locData.status === 'Inactive' ? 'Inactive' : 'Active',
       createdAt: nowIso,
       updatedAt: nowIso,
     };
+
+    const prevLocations = officeLocations;
     setOfficeLocations((prev) => [newLoc, ...prev]);
+
+    const sb = getSupabase();
+    if (sb) {
+      try {
+        const { data, error } = await sb
+          .from('office_locations')
+          .upsert(
+            {
+              id: newLoc.id,
+              code: newLoc.code || null,
+              name: newLoc.name,
+              address: newLoc.address,
+              latitude: newLoc.latitude,
+              longitude: newLoc.longitude,
+              allowed_radius_meters: newLoc.allowedRadiusMeters,
+              status: newLoc.status,
+              created_at: nowIso,
+              updated_at: nowIso,
+            },
+            { onConflict: 'id' }
+          )
+          .select();
+
+        if (error) {
+          console.error('Supabase office_locations insert failed:', error);
+          setOfficeLocations(prevLocations);
+          return {
+            success: false,
+            id,
+            error: formatOfficeLocationSupabaseError(error),
+          };
+        }
+
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('ensec_office_locations_seeded_v1', 'true');
+        }
+
+        if (Array.isArray(data) && data[0]) {
+          const confirmed = data[0];
+          const confirmedLoc: OfficeLocation = {
+            id: String(confirmed.id),
+            code: confirmed.code || undefined,
+            name: confirmed.name || newLoc.name,
+            address: confirmed.address ?? newLoc.address,
+            latitude: Number(confirmed.latitude),
+            longitude: Number(confirmed.longitude),
+            allowedRadiusMeters:
+              Number(confirmed.allowed_radius_meters) || newLoc.allowedRadiusMeters,
+            status: confirmed.status === 'Inactive' ? 'Inactive' : 'Active',
+            createdAt: confirmed.created_at || nowIso,
+            updatedAt: confirmed.updated_at || nowIso,
+          };
+          setOfficeLocations((prev) =>
+            prev.map((loc) => (loc.id === newLoc.id ? confirmedLoc : loc))
+          );
+        }
+      } catch (err: any) {
+        console.error('Exception saving office location to Supabase:', err);
+        setOfficeLocations(prevLocations);
+        return {
+          success: false,
+          id,
+          error: err?.message || 'Database connection error while saving office location.',
+        };
+      }
+    }
+
     addAuditLog(
       'OFFICE_LOCATION_CREATED',
       'Field Force Master',
       `Created office geofence ${newLoc.name} (${newLoc.latitude}, ${newLoc.longitude}, ${newLoc.allowedRadiusMeters}m)`
     );
+
     try {
       await fetch('/api/office-locations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newLoc),
+        body: JSON.stringify({ ...newLoc, skipSupabaseSync: Boolean(sb) }),
       });
     } catch {}
-    const sb = getSupabase();
-    if (sb) {
-      sb.from('office_locations')
-        .upsert({
-          id: newLoc.id,
-          code: newLoc.code || null,
-          name: newLoc.name,
-          address: newLoc.address,
-          latitude: newLoc.latitude,
-          longitude: newLoc.longitude,
-          allowed_radius_meters: newLoc.allowedRadiusMeters,
-          status: newLoc.status,
-          updated_at: nowIso,
-        })
-        .then(() => {});
-    }
+
     return { success: true, id };
   };
 
@@ -18285,70 +18436,232 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     updates: Partial<OfficeLocation>
   ): Promise<{ success: boolean; error?: string }> => {
     const nowIso = new Date().toISOString();
-    let mergedOffice: OfficeLocation | undefined;
+    const existingOffice = officeLocations.find((loc) => loc.id === id);
+    if (!existingOffice && !updates.name) {
+      return { success: false, error: 'Office location record not found.' };
+    }
+
+    const normalizedCode =
+      updates.code !== undefined
+        ? updates.code?.trim() || undefined
+        : existingOffice?.code?.trim() || undefined;
+    const normalizedName = (updates.name ?? existingOffice?.name ?? 'Office Location').trim();
+    const normalizedAddress = (updates.address ?? existingOffice?.address ?? '').trim();
+    const lat =
+      updates.latitude !== undefined
+        ? Number(updates.latitude)
+        : Number(existingOffice?.latitude);
+    const lng =
+      updates.longitude !== undefined
+        ? Number(updates.longitude)
+        : Number(existingOffice?.longitude);
+    const radius =
+      Number(updates.allowedRadiusMeters ?? existingOffice?.allowedRadiusMeters) > 0
+        ? Math.round(Number(updates.allowedRadiusMeters ?? existingOffice?.allowedRadiusMeters))
+        : DEFAULT_ALLOWED_RADIUS_METERS;
+    const status =
+      (updates.status ?? existingOffice?.status) === 'Inactive' ? 'Inactive' : 'Active';
+
+    if (!normalizedName || !Number.isFinite(lat) || !Number.isFinite(lng)) {
+      return {
+        success: false,
+        error: 'Valid office name, latitude, and longitude are required.',
+      };
+    }
+
+    if (
+      normalizedCode &&
+      officeLocations.some(
+        (loc) =>
+          loc.id !== id &&
+          (loc.code || '').trim().toLowerCase() === normalizedCode.toLowerCase()
+      )
+    ) {
+      return {
+        success: false,
+        error: `Office Code "${normalizedCode}" is already assigned to another office location.`,
+      };
+    }
+
+    const mergedOffice: OfficeLocation = {
+      ...(existingOffice || { id }),
+      ...updates,
+      id,
+      code: normalizedCode,
+      name: normalizedName,
+      address: normalizedAddress,
+      latitude: lat,
+      longitude: lng,
+      allowedRadiusMeters: radius,
+      status,
+      createdAt: existingOffice?.createdAt || nowIso,
+      updatedAt: nowIso,
+    };
+
+    const prevLocations = officeLocations;
+    const prevReps = fieldForceReps;
+
     setOfficeLocations((prev) =>
-      prev.map((loc) => {
-        if (loc.id === id) {
-          mergedOffice = { ...loc, ...updates, updatedAt: nowIso };
-          return mergedOffice;
-        }
-        return loc;
-      })
+      prev.some((loc) => loc.id === id)
+        ? prev.map((loc) => (loc.id === id ? mergedOffice : loc))
+        : [mergedOffice, ...prev]
     );
+
     // Cascade coordinate/radius updates to employees assigned to this office ID
     setFieldForceReps((prev) =>
       prev.map((rep) => {
         if (rep.assignedOfficeId === id) {
           return {
             ...rep,
-            assignedOfficeName: updates.name ?? rep.assignedOfficeName,
-            officeLatitude: updates.latitude ?? rep.officeLatitude,
-            officeLongitude: updates.longitude ?? rep.officeLongitude,
-            allowedRadiusMeters: updates.allowedRadiusMeters ?? rep.allowedRadiusMeters,
-            officeAddress: updates.address ?? rep.officeAddress,
-            locationStatus: updates.status ?? rep.locationStatus,
+            assignedOfficeName: mergedOffice.name,
+            officeLatitude: mergedOffice.latitude,
+            officeLongitude: mergedOffice.longitude,
+            allowedRadiusMeters: mergedOffice.allowedRadiusMeters,
+            officeAddress: mergedOffice.address,
+            locationStatus: mergedOffice.status,
           };
         }
         return rep;
       })
     );
+
+    const sb = getSupabase();
+    if (sb) {
+      try {
+        const { data, error } = await sb
+          .from('office_locations')
+          .upsert(
+            {
+              id: mergedOffice.id,
+              code: mergedOffice.code || null,
+              name: mergedOffice.name,
+              address: mergedOffice.address,
+              latitude: mergedOffice.latitude,
+              longitude: mergedOffice.longitude,
+              allowed_radius_meters: mergedOffice.allowedRadiusMeters,
+              status: mergedOffice.status,
+              updated_at: nowIso,
+            },
+            { onConflict: 'id' }
+          )
+          .select();
+
+        if (error) {
+          console.error('Supabase office_locations update failed:', error);
+          setOfficeLocations(prevLocations);
+          setFieldForceReps(prevReps);
+          return {
+            success: false,
+            error: formatOfficeLocationSupabaseError(error),
+          };
+        }
+
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('ensec_office_locations_seeded_v1', 'true');
+        }
+
+        if (Array.isArray(data) && data[0]) {
+          const confirmed = data[0];
+          const confirmedLoc: OfficeLocation = {
+            id: String(confirmed.id),
+            code: confirmed.code || undefined,
+            name: confirmed.name || mergedOffice.name,
+            address: confirmed.address ?? mergedOffice.address,
+            latitude: Number(confirmed.latitude),
+            longitude: Number(confirmed.longitude),
+            allowedRadiusMeters:
+              Number(confirmed.allowed_radius_meters) || mergedOffice.allowedRadiusMeters,
+            status: confirmed.status === 'Inactive' ? 'Inactive' : 'Active',
+            createdAt: confirmed.created_at || mergedOffice.createdAt,
+            updatedAt: confirmed.updated_at || nowIso,
+          };
+          setOfficeLocations((prev) =>
+            prev.map((loc) => (loc.id === id ? confirmedLoc : loc))
+          );
+        }
+
+        // Persist cascaded office coordinate/name/radius updates to assigned employees in Supabase
+        const hasAssignedReps = prevReps.some((rep) => rep.assignedOfficeId === id);
+        if (hasAssignedReps) {
+          sb.from('field_force_reps')
+            .update({
+              assigned_office_name: mergedOffice.name,
+              office_latitude: mergedOffice.latitude,
+              office_longitude: mergedOffice.longitude,
+              allowed_radius_meters: mergedOffice.allowedRadiusMeters,
+              office_address: mergedOffice.address,
+              location_status: mergedOffice.status,
+            })
+            .eq('assigned_office_id', id)
+            .then(({ error: repErr }) => {
+              if (repErr && repErr.code !== '42703') {
+                console.warn('Notice syncing updated office coordinates to field_force_reps:', repErr.message);
+              }
+            });
+        }
+      } catch (err: any) {
+        console.error('Exception updating office location in Supabase:', err);
+        setOfficeLocations(prevLocations);
+        setFieldForceReps(prevReps);
+        return {
+          success: false,
+          error: err?.message || 'Database connection error while updating office location.',
+        };
+      }
+    }
+
     addAuditLog('OFFICE_LOCATION_UPDATED', 'Field Force Master', `Updated office geofence ID ${id}`);
+
     try {
       await fetch(`/api/office-locations/${encodeURIComponent(id)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updates),
+        body: JSON.stringify({ ...mergedOffice, skipSupabaseSync: Boolean(sb) }),
       });
     } catch {}
-    const sb = getSupabase();
-    if (sb && mergedOffice) {
-      sb.from('office_locations')
-        .upsert({
-          id: mergedOffice.id,
-          code: mergedOffice.code || null,
-          name: mergedOffice.name,
-          address: mergedOffice.address,
-          latitude: mergedOffice.latitude,
-          longitude: mergedOffice.longitude,
-          allowed_radius_meters: mergedOffice.allowedRadiusMeters,
-          status: mergedOffice.status,
-          updated_at: nowIso,
-        })
-        .then(() => {});
-    }
+
     return { success: true };
   };
 
-  const deleteOfficeLocation = async (id: string): Promise<void> => {
+  const deleteOfficeLocation = async (id: string): Promise<{ success: boolean; error?: string }> => {
+    const prevLocations = officeLocations;
     setOfficeLocations((prev) => prev.filter((loc) => loc.id !== id));
-    addAuditLog('OFFICE_LOCATION_DELETED', 'Field Force Master', `Deleted office geofence ID ${id}`);
-    try {
-      await fetch(`/api/office-locations/${encodeURIComponent(id)}`, { method: 'DELETE' });
-    } catch {}
+
     const sb = getSupabase();
     if (sb) {
-      sb.from('office_locations').delete().eq('id', id).then(() => {});
+      try {
+        const { error } = await sb.from('office_locations').delete().eq('id', id);
+        if (error) {
+          console.error('Supabase office_locations delete failed:', error);
+          setOfficeLocations(prevLocations);
+          return {
+            success: false,
+            error: formatOfficeLocationSupabaseError(error),
+          };
+        }
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('ensec_office_locations_seeded_v1', 'true');
+        }
+      } catch (err: any) {
+        console.error('Exception deleting office location from Supabase:', err);
+        setOfficeLocations(prevLocations);
+        return {
+          success: false,
+          error: err?.message || 'Database connection error while deleting office location.',
+        };
+      }
     }
+
+    addAuditLog('OFFICE_LOCATION_DELETED', 'Field Force Master', `Deleted office geofence ID ${id}`);
+
+    try {
+      await fetch(
+        `/api/office-locations/${encodeURIComponent(id)}${sb ? '?skipSupabaseSync=1' : ''}`,
+        { method: 'DELETE' }
+      );
+    } catch {}
+
+    return { success: true };
   };
 
   const recordRejectedAttendanceAttempt = (
