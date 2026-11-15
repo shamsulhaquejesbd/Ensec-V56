@@ -120,6 +120,28 @@ export const ERP_PAGE_PERMISSIONS_REGISTRY: ERPModuleCategory[] = [
           { key: 'edit', label: 'Edit Product', description: 'Can update battery capacities, warranty terms, and pricing' },
           { key: 'delete', label: 'Delete Product', description: 'Can remove product SKUs', isDestructive: true },
           { key: 'export', label: 'Export Products', description: 'Can download finished goods catalog' },
+          // Distributor Price (BDT), Retail MRP (BDT) and Technical specification of FG Visibility Permissions
+          {
+            key: 'view_distributor_price',
+            label: 'View Distributor Price (BDT)',
+            description: 'Show the Distributor Price (BDT) column and distributor pricing details in Finished Battery Products',
+            subsection: 'Distributor Price (BDT), Retail MRP (BDT) and Technical specification of FG Visibility Permissions',
+            group: 'Finished Battery Products Visibility',
+          },
+          {
+            key: 'view_retail_mrp',
+            label: 'View Retail MRP (BDT)',
+            description: 'Show the Retail MRP (BDT) column and retail MRP pricing details in Finished Battery Products',
+            subsection: 'Distributor Price (BDT), Retail MRP (BDT) and Technical specification of FG Visibility Permissions',
+            group: 'Finished Battery Products Visibility',
+          },
+          {
+            key: 'view_fg_specification',
+            label: 'View specification of FG',
+            description: 'Show the Specs button and Technical specification of FG datasheet & fields in Finished Battery Products',
+            subsection: 'Distributor Price (BDT), Retail MRP (BDT) and Technical specification of FG Visibility Permissions',
+            group: 'Finished Battery Products Visibility',
+          },
         ],
       },
       {
@@ -1117,6 +1139,8 @@ export const PERMISSION_TEMPLATES: PermissionTemplate[] = [
             if (
               (page.id === 'raw-material-inventory' &&
                 ['view_raw_material_stock_value', 'view_raw_material_purchase_rate', 'view_batch_stock_value'].includes(act.key)) ||
+              (page.id === 'basic-data-products' &&
+                ['view_distributor_price', 'view_retail_mrp'].includes(act.key)) ||
               (page.id === 'manufacturing' &&
                 [
                   'view_raw_material_cost',
@@ -1188,6 +1212,9 @@ export const PERMISSION_TEMPLATES: PermissionTemplate[] = [
             act.key === 'view_total_cost' ||
             act.key === 'view_total_material_issue_value' ||
             act.key === 'view_bom_export' ||
+            act.key === 'view_distributor_price' ||
+            act.key === 'view_retail_mrp' ||
+            act.key === 'view_fg_specification' ||
             act.key === 'view_valuation' ||
             act.key === 'view_revenue' ||
             act.key === 'export'
@@ -1466,6 +1493,24 @@ export function canViewBomUpload(user: any): boolean {
   if (!user) return false;
   if (user.role === 'Super Admin') return true;
   return hasPageAction(user, 'manufacturing', 'view_bom_upload');
+}
+
+export function canViewFinishedProductDistributorPrice(user: any): boolean {
+  if (!user) return false;
+  if (user.role === 'Super Admin') return true;
+  return hasPageAction(user, 'basic-data-products', 'view_distributor_price');
+}
+
+export function canViewFinishedProductRetailMrp(user: any): boolean {
+  if (!user) return false;
+  if (user.role === 'Super Admin') return true;
+  return hasPageAction(user, 'basic-data-products', 'view_retail_mrp');
+}
+
+export function canViewFinishedProductSpecification(user: any): boolean {
+  if (!user) return false;
+  if (user.role === 'Super Admin') return true;
+  return hasPageAction(user, 'basic-data-products', 'view_fg_specification');
 }
 
 export function canViewManufacturingCostDashboard(user: any): boolean {

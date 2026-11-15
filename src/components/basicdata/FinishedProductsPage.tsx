@@ -41,10 +41,16 @@ import {
 } from 'lucide-react';
 import { useERP } from '../../context/ERPContext.tsx';
 import { Product, BOMItem } from '../../types/erp.ts';
+import {
+  canViewFinishedProductDistributorPrice,
+  canViewFinishedProductRetailMrp,
+  canViewFinishedProductSpecification,
+} from '../../types/pagePermissions.ts';
 
 
 export const FinishedProductsPage: React.FC = () => {
   const {
+    currentUser,
     products,
     addProduct,
     updateProduct,
@@ -62,6 +68,10 @@ export const FinishedProductsPage: React.FC = () => {
   const canCreate = hasPageAction ? hasPageAction('basic-data-products', 'create') : true;
   const canEdit = hasPageAction ? hasPageAction('basic-data-products', 'edit') : true;
   const canDelete = hasPageAction ? hasPageAction('basic-data-products', 'delete') : true;
+  const canViewDistributorPrice = canViewFinishedProductDistributorPrice(currentUser);
+  const canViewRetailMrp = canViewFinishedProductRetailMrp(currentUser);
+  const canViewFgSpecification = canViewFinishedProductSpecification(currentUser);
+  const catalogTableColSpan = 7 + (canViewDistributorPrice ? 1 : 0) + (canViewRetailMrp ? 1 : 0);
 
   const finishedUOMs = useMemo(() => {
     return uoms.filter((u) => u.isActive && (u.applicableTo === 'Finish Product' || u.applicableTo === 'Both'));
@@ -650,6 +660,7 @@ export const FinishedProductsPage: React.FC = () => {
             </div>
 
             {/* Card 2: Electrical & Battery Engineering Specs */}
+            {canViewFgSpecification && (
             <div className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 shadow-xs space-y-5">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-3">
                 <div className="flex items-center gap-2">
@@ -950,6 +961,7 @@ export const FinishedProductsPage: React.FC = () => {
                 </div>
               </div>
             </div>
+            )}
 
             {/* Card 3: 5-Channel Pricing Architecture (BDT) */}
             <div className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 shadow-xs space-y-4">
@@ -973,22 +985,24 @@ export const FinishedProductsPage: React.FC = () => {
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs">
-                <div className="p-3 rounded-xl border border-emerald-200 dark:border-emerald-800/60 bg-emerald-50/40 dark:bg-emerald-950/20">
-                  <label className="block text-[11px] font-bold text-emerald-800 dark:text-emerald-300 mb-1">
-                    Retail Maximum Retail Price (MRP) *
-                  </label>
-                  <div className="relative">
-                    <span className="absolute left-3 top-2.5 text-xs text-emerald-600 font-bold">৳</span>
-                    <input
-                      type="number"
-                      required
-                      value={prodRetailPrice}
-                      onChange={(e) => setProdRetailPrice(Number(e.target.value))}
-                      className="w-full pl-7 pr-3 py-2 rounded-lg border border-emerald-300 dark:border-emerald-700 bg-white dark:bg-slate-900 font-mono font-bold text-slate-900 dark:text-white"
-                    />
+                {canViewRetailMrp && (
+                  <div className="p-3 rounded-xl border border-emerald-200 dark:border-emerald-800/60 bg-emerald-50/40 dark:bg-emerald-950/20">
+                    <label className="block text-[11px] font-bold text-emerald-800 dark:text-emerald-300 mb-1">
+                      Retail Maximum Retail Price (MRP) *
+                    </label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-2.5 text-xs text-emerald-600 font-bold">৳</span>
+                      <input
+                        type="number"
+                        required
+                        value={prodRetailPrice}
+                        onChange={(e) => setProdRetailPrice(Number(e.target.value))}
+                        className="w-full pl-7 pr-3 py-2 rounded-lg border border-emerald-300 dark:border-emerald-700 bg-white dark:bg-slate-900 font-mono font-bold text-slate-900 dark:text-white"
+                      />
+                    </div>
+                    <span className="text-[10px] text-emerald-700/80 dark:text-emerald-400/80 mt-1 block">End-consumer box packaging MRP</span>
                   </div>
-                  <span className="text-[10px] text-emerald-700/80 dark:text-emerald-400/80 mt-1 block">End-consumer box packaging MRP</span>
-                </div>
+                )}
 
                 <div className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50">
                   <label className="block text-[11px] font-bold text-slate-800 dark:text-slate-300 mb-1">
@@ -1020,7 +1034,15 @@ export const FinishedProductsPage: React.FC = () => {
                     </span>
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-                    {customerCategories.map((cat) => {
+                    {customerCategories
+                      .filter((cat) => {
+                        const isDistCat = cat.targetAudience === 'Distributor' || cat.code.includes('DIST');
+                        const isDealerOrCorpOrPrj = cat.code.includes('DEALER') || cat.code.includes('CORP') || cat.code.includes('PRJ');
+                        if (isDistCat && !canViewDistributorPrice) return false;
+                        if (!isDistCat && !isDealerOrCorpOrPrj && !canViewRetailMrp) return false;
+                        return true;
+                      })
+                      .map((cat) => {
                       const currentVal = prodCategoryPrices[cat.id] ?? (
                         cat.targetAudience === 'Distributor'
                           ? prodDistributorPrice
@@ -1275,56 +1297,62 @@ export const FinishedProductsPage: React.FC = () => {
                     <span className="text-[10px] text-slate-400 block">Stored Energy</span>
                     <span className="font-semibold text-emerald-600 font-mono">{calculatedKWh} kWh</span>
                   </div>
-                  <div>
-                    <span className="text-[10px] text-slate-400 block">Distributor Rate</span>
-                    <span className="font-bold font-mono text-slate-900 dark:text-white">
-                      ৳ {Number(prodDistributorPrice || 0).toLocaleString()}
-                    </span>
-                  </div>
-                  <div>
-                    <span className="text-[10px] text-slate-400 block">Retail MRP</span>
-                    <span className="font-bold font-mono text-purple-600 dark:text-purple-400">
-                      ৳ {Number(prodRetailPrice || 0).toLocaleString()}
-                    </span>
-                  </div>
+                  {canViewDistributorPrice && (
+                    <div>
+                      <span className="text-[10px] text-slate-400 block">Distributor Rate</span>
+                      <span className="font-bold font-mono text-slate-900 dark:text-white">
+                        ৳ {Number(prodDistributorPrice || 0).toLocaleString()}
+                      </span>
+                    </div>
+                  )}
+                  {canViewRetailMrp && (
+                    <div>
+                      <span className="text-[10px] text-slate-400 block">Retail MRP</span>
+                      <span className="font-bold font-mono text-purple-600 dark:text-purple-400">
+                        ৳ {Number(prodRetailPrice || 0).toLocaleString()}
+                      </span>
+                    </div>
+                  )}
                 </div>
 
                 {/* Live Specification Sheet Box */}
-                <div className="pt-2 border-t border-slate-200 dark:border-slate-700/60 space-y-1.5">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 block">
-                    Engineering Specs Sheet
-                  </span>
-                  <div className="bg-white dark:bg-slate-900 rounded-lg p-2.5 border border-slate-200/80 dark:border-slate-700/80 text-[11px] space-y-1">
-                    <div className="flex justify-between text-slate-600 dark:text-slate-400">
-                      <span>Normal Voltage:</span>
-                      <span className="font-mono font-semibold text-slate-900 dark:text-white">{prodNormalVoltage || 'N/A'}</span>
-                    </div>
-                    <div className="flex justify-between text-slate-600 dark:text-slate-400">
-                      <span>Rated:</span>
-                      <span className="font-mono font-semibold text-slate-900 dark:text-white">{prodRated || 'N/A'}</span>
-                    </div>
-                    <div className="flex justify-between text-slate-600 dark:text-slate-400">
-                      <span>Cycle Life:</span>
-                      <span className="font-semibold text-blue-600 dark:text-blue-400">{prodCycleLife || 'N/A'}</span>
-                    </div>
-                    <div className="flex justify-between text-slate-600 dark:text-slate-400">
-                      <span>Typical Capacity:</span>
-                      <span className="font-mono font-semibold text-emerald-600 dark:text-emerald-400">{prodTypicalCapacity || 'N/A'}</span>
-                    </div>
-                    <div className="flex justify-between text-slate-600 dark:text-slate-400">
-                      <span>Charge / Discharge:</span>
-                      <span className="font-mono text-slate-900 dark:text-white">{prodMaxChargeCurrent || '50A'} / {prodMaxDischargeCurrent || '120-200A'}</span>
-                    </div>
-                    <div className="flex justify-between text-slate-600 dark:text-slate-400">
-                      <span>Weight & Dim:</span>
-                      <span className="font-mono text-slate-800 dark:text-slate-200">{prodWeight || '40KG'} • {prodDimension || '50*36*26'}</span>
-                    </div>
-                    <div className="flex justify-between text-slate-600 dark:text-slate-400">
-                      <span>Temp & Mileage:</span>
-                      <span className="font-mono text-slate-800 dark:text-slate-200">{prodOperatingTemperature || '0-60°C'} • {prodMileage || '80-90KM'}</span>
+                {canViewFgSpecification && (
+                  <div className="pt-2 border-t border-slate-200 dark:border-slate-700/60 space-y-1.5">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 block">
+                      Engineering Specs Sheet
+                    </span>
+                    <div className="bg-white dark:bg-slate-900 rounded-lg p-2.5 border border-slate-200/80 dark:border-slate-700/80 text-[11px] space-y-1">
+                      <div className="flex justify-between text-slate-600 dark:text-slate-400">
+                        <span>Normal Voltage:</span>
+                        <span className="font-mono font-semibold text-slate-900 dark:text-white">{prodNormalVoltage || 'N/A'}</span>
+                      </div>
+                      <div className="flex justify-between text-slate-600 dark:text-slate-400">
+                        <span>Rated:</span>
+                        <span className="font-mono font-semibold text-slate-900 dark:text-white">{prodRated || 'N/A'}</span>
+                      </div>
+                      <div className="flex justify-between text-slate-600 dark:text-slate-400">
+                        <span>Cycle Life:</span>
+                        <span className="font-semibold text-blue-600 dark:text-blue-400">{prodCycleLife || 'N/A'}</span>
+                      </div>
+                      <div className="flex justify-between text-slate-600 dark:text-slate-400">
+                        <span>Typical Capacity:</span>
+                        <span className="font-mono font-semibold text-emerald-600 dark:text-emerald-400">{prodTypicalCapacity || 'N/A'}</span>
+                      </div>
+                      <div className="flex justify-between text-slate-600 dark:text-slate-400">
+                        <span>Charge / Discharge:</span>
+                        <span className="font-mono text-slate-900 dark:text-white">{prodMaxChargeCurrent || '50A'} / {prodMaxDischargeCurrent || '120-200A'}</span>
+                      </div>
+                      <div className="flex justify-between text-slate-600 dark:text-slate-400">
+                        <span>Weight & Dim:</span>
+                        <span className="font-mono text-slate-800 dark:text-slate-200">{prodWeight || '40KG'} • {prodDimension || '50*36*26'}</span>
+                      </div>
+                      <div className="flex justify-between text-slate-600 dark:text-slate-400">
+                        <span>Temp & Mileage:</span>
+                        <span className="font-mono text-slate-800 dark:text-slate-200">{prodOperatingTemperature || '0-60°C'} • {prodMileage || '80-90KM'}</span>
+                      </div>
                     </div>
                   </div>
-                </div>
+                )}
               </div>
 
               {/* Profitability & Margins Widget */}
@@ -1341,37 +1369,41 @@ export const FinishedProductsPage: React.FC = () => {
                     </span>
                   </div>
 
-                  <div className="p-2.5 rounded-xl bg-amber-50/50 dark:bg-amber-950/30 border border-amber-200/60 dark:border-amber-900/40 flex items-center justify-between">
-                    <div>
-                      <span className="font-semibold text-amber-800 dark:text-amber-300 block">
-                        Distributor Margin
-                      </span>
+                  {canViewDistributorPrice && (
+                    <div className="p-2.5 rounded-xl bg-amber-50/50 dark:bg-amber-950/30 border border-amber-200/60 dark:border-amber-900/40 flex items-center justify-between">
+                      <div>
+                        <span className="font-semibold text-amber-800 dark:text-amber-300 block">
+                          Distributor Margin
+                        </span>
+                      </div>
+                      <div className="text-right">
+                        <span className="font-mono font-bold text-amber-700 dark:text-amber-300 block">
+                          ৳ {distributorMarginBDT.toLocaleString()}
+                        </span>
+                        <span className="text-[10px] font-bold text-emerald-600">
+                          {distributorMarginPct}% margin
+                        </span>
+                      </div>
                     </div>
-                    <div className="text-right">
-                      <span className="font-mono font-bold text-amber-700 dark:text-amber-300 block">
-                        ৳ {distributorMarginBDT.toLocaleString()}
-                      </span>
-                      <span className="text-[10px] font-bold text-emerald-600">
-                        {distributorMarginPct}% margin
-                      </span>
-                    </div>
-                  </div>
+                  )}
 
-                  <div className="p-2.5 rounded-xl bg-emerald-50/50 dark:bg-emerald-950/30 border border-emerald-200/60 dark:border-emerald-900/40 flex items-center justify-between">
-                    <div>
-                      <span className="font-semibold text-emerald-800 dark:text-emerald-300 block">
-                        Retail MRP Margin
-                      </span>
+                  {canViewRetailMrp && (
+                    <div className="p-2.5 rounded-xl bg-emerald-50/50 dark:bg-emerald-950/30 border border-emerald-200/60 dark:border-emerald-900/40 flex items-center justify-between">
+                      <div>
+                        <span className="font-semibold text-emerald-800 dark:text-emerald-300 block">
+                          Retail MRP Margin
+                        </span>
+                      </div>
+                      <div className="text-right">
+                        <span className="font-mono font-bold text-emerald-700 dark:text-emerald-300 block">
+                          ৳ {retailMarginBDT.toLocaleString()}
+                        </span>
+                        <span className="text-[10px] font-bold text-emerald-600">
+                          {retailMarginPct}% margin
+                        </span>
+                      </div>
                     </div>
-                    <div className="text-right">
-                      <span className="font-mono font-bold text-emerald-700 dark:text-emerald-300 block">
-                        ৳ {retailMarginBDT.toLocaleString()}
-                      </span>
-                      <span className="text-[10px] font-bold text-emerald-600">
-                        {retailMarginPct}% margin
-                      </span>
-                    </div>
-                  </div>
+                  )}
                 </div>
               </div>
 
@@ -1565,8 +1597,8 @@ export const FinishedProductsPage: React.FC = () => {
                 <th className="p-3">Product Name</th>
                 <th className="p-3">Category & Brand</th>
                 <th className="p-3">Chemistry & Rating</th>
-                <th className="p-3">Distributor Price (BDT)</th>
-                <th className="p-3">Retail MRP (BDT)</th>
+                {canViewDistributorPrice && <th className="p-3">Distributor Price (BDT)</th>}
+                {canViewRetailMrp && <th className="p-3">Retail MRP (BDT)</th>}
                 <th className="p-3">Warranty</th>
                 <th className="p-3">Status</th>
                 <th className="p-3 text-right">Actions</th>
@@ -1624,12 +1656,16 @@ export const FinishedProductsPage: React.FC = () => {
                       )}
                     </div>
                   </td>
-                  <td className="p-3 font-mono font-bold text-slate-900 dark:text-white">
-                    ৳ {prod.distributorPriceBDT.toLocaleString()}
-                  </td>
-                  <td className="p-3 font-mono text-slate-600 dark:text-slate-300">
-                    ৳ {prod.retailPriceBDT.toLocaleString()}
-                  </td>
+                  {canViewDistributorPrice && (
+                    <td className="p-3 font-mono font-bold text-slate-900 dark:text-white">
+                      ৳ {prod.distributorPriceBDT.toLocaleString()}
+                    </td>
+                  )}
+                  {canViewRetailMrp && (
+                    <td className="p-3 font-mono text-slate-600 dark:text-slate-300">
+                      ৳ {prod.retailPriceBDT.toLocaleString()}
+                    </td>
+                  )}
                   <td className="p-3 text-slate-500 font-medium">
                     {prod.warrantyMonths} Months
                   </td>
@@ -1646,13 +1682,15 @@ export const FinishedProductsPage: React.FC = () => {
                   </td>
                   <td className="p-3 text-right">
                     <div className="flex items-center justify-end gap-1.5">
-                      <button
-                        onClick={() => setViewingSpecsProduct(prod)}
-                        className="px-2 py-1 text-[11px] rounded bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 font-semibold cursor-pointer"
-                        title="View Technical Specifications Datasheet"
-                      >
-                        Specs
-                      </button>
+                      {canViewFgSpecification && (
+                        <button
+                          onClick={() => setViewingSpecsProduct(prod)}
+                          className="px-2 py-1 text-[11px] rounded bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 font-semibold cursor-pointer"
+                          title="View Technical Specifications Datasheet"
+                        >
+                          Specs
+                        </button>
+                      )}
                       <button
                         onClick={() => setViewingBOMProduct(prod)}
                         className="px-2 py-1 text-[11px] rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 font-medium cursor-pointer"
@@ -1682,7 +1720,7 @@ export const FinishedProductsPage: React.FC = () => {
               ))}
               {filteredProducts.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="p-8 text-center text-slate-500">
+                  <td colSpan={catalogTableColSpan} className="p-8 text-center text-slate-500">
                     <div className="flex flex-col items-center justify-center gap-2">
                       <Package className="w-8 h-8 text-slate-300 dark:text-slate-600" />
                       <p className="font-semibold text-slate-700 dark:text-slate-300">No finished products found</p>
@@ -1791,39 +1829,43 @@ export const FinishedProductsPage: React.FC = () => {
                   </select>
                 </div>
 
-                <div>
-                  <label className="block text-slate-600 dark:text-slate-400 font-semibold mb-1">
-                    Distributor Price (BDT)
-                  </label>
-                  <input
-                    type="number"
-                    value={editingProduct.distributorPriceBDT}
-                    onChange={(e) =>
-                      setEditingProduct({
-                        ...editingProduct,
-                        distributorPriceBDT: Number(e.target.value),
-                      })
-                    }
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 font-mono"
-                  />
-                </div>
+                {canViewDistributorPrice && (
+                  <div>
+                    <label className="block text-slate-600 dark:text-slate-400 font-semibold mb-1">
+                      Distributor Price (BDT)
+                    </label>
+                    <input
+                      type="number"
+                      value={editingProduct.distributorPriceBDT}
+                      onChange={(e) =>
+                        setEditingProduct({
+                          ...editingProduct,
+                          distributorPriceBDT: Number(e.target.value),
+                        })
+                      }
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 font-mono"
+                    />
+                  </div>
+                )}
 
-                <div>
-                  <label className="block text-slate-600 dark:text-slate-400 font-semibold mb-1">
-                    Retail MRP (BDT)
-                  </label>
-                  <input
-                    type="number"
-                    value={editingProduct.retailPriceBDT}
-                    onChange={(e) =>
-                      setEditingProduct({
-                        ...editingProduct,
-                        retailPriceBDT: Number(e.target.value),
-                      })
-                    }
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 font-mono"
-                  />
-                </div>
+                {canViewRetailMrp && (
+                  <div>
+                    <label className="block text-slate-600 dark:text-slate-400 font-semibold mb-1">
+                      Retail MRP (BDT)
+                    </label>
+                    <input
+                      type="number"
+                      value={editingProduct.retailPriceBDT}
+                      onChange={(e) =>
+                        setEditingProduct({
+                          ...editingProduct,
+                          retailPriceBDT: Number(e.target.value),
+                        })
+                      }
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 font-mono"
+                    />
+                  </div>
+                )}
 
                 <div>
                   <label className="block text-slate-600 dark:text-slate-400 font-semibold mb-1">
@@ -1875,7 +1917,15 @@ export const FinishedProductsPage: React.FC = () => {
                     </span>
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                    {customerCategories.map((cat) => {
+                    {customerCategories
+                      .filter((cat) => {
+                        const isDistCat = cat.targetAudience === 'Distributor' || cat.code.includes('DIST');
+                        const isDealerOrCorpOrPrj = cat.code.includes('DEALER') || cat.code.includes('CORP') || cat.code.includes('PRJ');
+                        if (isDistCat && !canViewDistributorPrice) return false;
+                        if (!isDistCat && !isDealerOrCorpOrPrj && !canViewRetailMrp) return false;
+                        return true;
+                      })
+                      .map((cat) => {
                       const currentVal =
                         editingProduct.categoryPrices?.[cat.id] ?? (
                           cat.targetAudience === 'Distributor'
@@ -1926,6 +1976,7 @@ export const FinishedProductsPage: React.FC = () => {
               )}
 
               {/* Technical Specifications Section in Edit Modal */}
+              {canViewFgSpecification && (
               <div className="pt-3 border-t border-slate-200 dark:border-slate-800 space-y-3">
                 <div className="flex items-center justify-between">
                   <span className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300 uppercase tracking-wider flex items-center gap-1.5">
@@ -2103,6 +2154,7 @@ export const FinishedProductsPage: React.FC = () => {
                   </div>
                 </div>
               </div>
+              )}
 
               <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-200 dark:border-slate-800">
                 <button
@@ -2265,7 +2317,7 @@ export const FinishedProductsPage: React.FC = () => {
       {/* ======================================================== */}
       {/* MODAL 5: VIEW TECHNICAL SPECIFICATIONS DATASHEET */}
       {/* ======================================================== */}
-      {viewingSpecsProduct && (
+      {viewingSpecsProduct && canViewFgSpecification && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 overflow-y-auto">
           <div className="relative w-full max-w-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl p-6 space-y-5 text-xs my-8 max-h-[90vh] overflow-y-auto">
             {/* Header */}
@@ -2399,24 +2451,28 @@ export const FinishedProductsPage: React.FC = () => {
 
               {/* Commercial & Warranty Summary */}
               <div className="p-3.5 rounded-xl border border-blue-200 dark:border-blue-900/60 bg-blue-50/50 dark:bg-blue-950/20 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
-                <div>
-                  <span className="text-[10px] text-slate-400 block uppercase font-bold">Distributor</span>
-                  <span className="font-mono font-bold text-slate-900 dark:text-white">
-                    ৳ {Number(viewingSpecsProduct.distributorPriceBDT || 0).toLocaleString()}
-                  </span>
-                </div>
+                {canViewDistributorPrice && (
+                  <div>
+                    <span className="text-[10px] text-slate-400 block uppercase font-bold">Distributor</span>
+                    <span className="font-mono font-bold text-slate-900 dark:text-white">
+                      ৳ {Number(viewingSpecsProduct.distributorPriceBDT || 0).toLocaleString()}
+                    </span>
+                  </div>
+                )}
                 <div>
                   <span className="text-[10px] text-slate-400 block uppercase font-bold">Dealer Rate</span>
                   <span className="font-mono font-bold text-slate-900 dark:text-white">
                     ৳ {Number(viewingSpecsProduct.dealerPriceBDT || 0).toLocaleString()}
                   </span>
                 </div>
-                <div>
-                  <span className="text-[10px] text-slate-400 block uppercase font-bold">Retail MRP</span>
-                  <span className="font-mono font-bold text-purple-600 dark:text-purple-400">
-                    ৳ {Number(viewingSpecsProduct.retailPriceBDT || 0).toLocaleString()}
-                  </span>
-                </div>
+                {canViewRetailMrp && (
+                  <div>
+                    <span className="text-[10px] text-slate-400 block uppercase font-bold">Retail MRP</span>
+                    <span className="font-mono font-bold text-purple-600 dark:text-purple-400">
+                      ৳ {Number(viewingSpecsProduct.retailPriceBDT || 0).toLocaleString()}
+                    </span>
+                  </div>
+                )}
                 <div>
                   <span className="text-[10px] text-slate-400 block uppercase font-bold">Warranty</span>
                   <span className="font-semibold text-emerald-600">
@@ -2427,17 +2483,21 @@ export const FinishedProductsPage: React.FC = () => {
             </div>
 
             <div className="flex items-center justify-between pt-3 border-t border-slate-200 dark:border-slate-800">
-              <button
-                type="button"
-                onClick={() => {
-                  const p = viewingSpecsProduct;
-                  setViewingSpecsProduct(null);
-                  setEditingProduct(p);
-                }}
-                className="px-4 py-2 rounded-xl text-xs font-semibold bg-blue-50 dark:bg-blue-950 text-blue-600 dark:text-blue-400 hover:bg-blue-100 cursor-pointer"
-              >
-                Edit Specifications
-              </button>
+              {canEdit ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const p = viewingSpecsProduct;
+                    setViewingSpecsProduct(null);
+                    setEditingProduct(p);
+                  }}
+                  className="px-4 py-2 rounded-xl text-xs font-semibold bg-blue-50 dark:bg-blue-950 text-blue-600 dark:text-blue-400 hover:bg-blue-100 cursor-pointer"
+                >
+                  Edit Specifications
+                </button>
+              ) : (
+                <div />
+              )}
               <button
                 type="button"
                 onClick={() => setViewingSpecsProduct(null)}

@@ -451,13 +451,9 @@ export const PageWisePermissionsEditor: React.FC<PageWisePermissionsEditorProps>
                 <h2 className="text-lg font-black tracking-tight text-white">
                   Super Admin Security &amp; Page-Wise Permission Control
                 </h2>
-                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                  Granular Action Clearance
-                </span>
+                
               </div>
-              <p className="text-xs text-slate-300 mt-1">
-                Configure explicit View, Create, Edit, Delete, Submit, Approve, and Execution rights across every individual ERP page.
-              </p>
+              
             </div>
           </div>
 
@@ -980,7 +976,7 @@ export const PageWisePermissionsEditor: React.FC<PageWisePermissionsEditorProps>
                                             <h6 className="text-xs font-extrabold text-slate-900 dark:text-white tracking-tight">
                                               {subTitle}
                                             </h6>
-                                            {subTitle !== 'Excel Export and Upload BOM Visibility Permissions' && (
+                                            {subTitle === 'Cost Visibility & Cost Sheet Permissions' && (
                                               <p className="text-[10px] text-slate-500 dark:text-slate-400">
                                                 Independent ON/OFF cost visibility &amp; Cost Sheet controls. Off options are enforced across UI, URLs, and API responses.
                                               </p>
@@ -1005,7 +1001,15 @@ export const PageWisePermissionsEditor: React.FC<PageWisePermissionsEditorProps>
                                               <div className="text-[11px] font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 pb-1 border-b border-slate-100 dark:border-slate-800">
                                                 {grp}
                                               </div>
-                                              <div className={groups.length === 1 ? 'grid grid-cols-1 sm:grid-cols-2 gap-2' : 'space-y-2'}>
+                                              <div
+                                                className={
+                                                  groups.length === 1
+                                                    ? grpActions.length >= 3
+                                                      ? 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2'
+                                                      : 'grid grid-cols-1 sm:grid-cols-2 gap-2'
+                                                    : 'space-y-2'
+                                                }
+                                              >
                                                 {grpActions.map((act) => {
                                                 const isGranted = Boolean(pagePerms[act.key]);
                                                 return (

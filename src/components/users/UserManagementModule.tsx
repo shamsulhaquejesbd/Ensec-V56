@@ -296,9 +296,7 @@ export const UserManagementModule: React.FC = () => {
             <h1 className="text-xl font-bold text-slate-900 dark:text-white">
               User & Salesman Management
             </h1>
-            <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
-              RBAC & Feature Permissions
-            </span>
+            
           </div>
           
         </div>
