@@ -239,11 +239,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
         { id: 'raw-material-inventory', label: 'Raw Material Inventory', icon: Layers },
         { id: 'procurement', label: 'Import Consignments & SCM', icon: Ship },
         { id: 'manufacturing', label: 'Manufacturing Costing & BOM', icon: Cpu },
-        { id: 'manufacturing-costing', label: 'Manufacturing Costing & P&L', icon: Calculator },
+        // { id: 'manufacturing-costing', label: 'Manufacturing Costing & P&L', icon: Calculator },
       ],
     },
     {
-      title: 'STOCK & INDENT',
+      title: 'STOCK',
       items: [
         {
           id: 'stock',
@@ -302,7 +302,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       items: [
         {
           id: 'finance-cashbook',
-          label: 'Cash & Bank Management',
+          label: 'Accounts',
           icon: DollarSign,
           isDropdown: true,
           children: [
