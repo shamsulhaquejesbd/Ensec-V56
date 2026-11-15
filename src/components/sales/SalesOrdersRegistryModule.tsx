@@ -170,6 +170,8 @@ export const SalesOrdersRegistryModule: React.FC<SalesOrdersRegistryModuleProps>
   const [reviewVatRate, setReviewVatRate] = useState<number>(5);
   const [reviewVatAmount, setReviewVatAmount] = useState<number>(0);
   const [reviewVatMode, setReviewVatMode] = useState<'percent' | 'amount'>('percent');
+  const [reviewWarehouseId, setReviewWarehouseId] = useState<string>('');
+  const [reviewWarehouseName, setReviewWarehouseName] = useState<string>('');
 
   // VAT / Tax editing state for Commercial Tax Invoice Modal
   const [isEditingInvoiceVat, setIsEditingInvoiceVat] = useState(false);
@@ -411,6 +413,18 @@ export const SalesOrdersRegistryModule: React.FC<SalesOrdersRegistryModuleProps>
     setReviewVatRate(initialRate);
     setReviewVatAmount(initialAmount);
     setReviewVatMode('percent');
+
+    const matchedWh = warehouses.find(
+      (w) =>
+        (order.warehouseId && String(w.id) === String(order.warehouseId)) ||
+        (order.warehouseName && w.name.toLowerCase() === order.warehouseName.toLowerCase())
+    );
+    setReviewWarehouseId(
+      matchedWh ? String(matchedWh.id) : String(order.warehouseId || warehouses[0]?.id || '')
+    );
+    setReviewWarehouseName(
+      matchedWh ? matchedWh.name : order.warehouseName || warehouses[0]?.name || 'Central Hub'
+    );
   };
 
   const handleOpenInvoiceModal = (order: SalesOrder) => {
@@ -571,7 +585,17 @@ export const SalesOrdersRegistryModule: React.FC<SalesOrdersRegistryModuleProps>
   const handleConfirmAccountsApproval = () => {
     if (!reviewOrder) return;
 
+    const selectedWh = warehouses.find((w) => String(w.id) === String(reviewWarehouseId));
+    const finalWarehouseId = selectedWh
+      ? String(selectedWh.id)
+      : reviewWarehouseId || reviewOrder.warehouseId;
+    const finalWarehouseName = selectedWh
+      ? selectedWh.name
+      : reviewWarehouseName || reviewOrder.warehouseName || 'Central Hub';
+
     const updatedData: Partial<SalesOrder> = {
+      warehouseId: finalWarehouseId,
+      warehouseName: finalWarehouseName,
       items: reviewItems,
       subTotalBDT: reviewSubtotal,
       discountBDT: reviewTotalDiscount,
@@ -594,7 +618,7 @@ export const SalesOrdersRegistryModule: React.FC<SalesOrdersRegistryModuleProps>
     };
     approveSalesOrder(reviewOrder.id, enrichedData);
     setNotificationBanner(
-      `Order ${reviewOrder.orderNumber} successfully approved by Accounts! Official Factory Delivery Order (D.O. #${doNum}) generated. Note: No Challan generated yet — requires Factory D.O. Acceptance and Battery Serials.`
+      `Order ${reviewOrder.orderNumber} successfully approved by Accounts (Dispatch Warehouse: ${finalWarehouseName})! Official Factory Delivery Order (D.O. #${doNum}) generated. Note: No Challan generated yet — requires Factory D.O. Acceptance and Battery Serials.`
     );
     setTimeout(() => setNotificationBanner(null), 6000);
     setSelectedOrderForDO({
@@ -1654,13 +1678,35 @@ export const SalesOrdersRegistryModule: React.FC<SalesOrdersRegistryModuleProps>
               </div>
 
               <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
-                <span className="text-[10px] font-bold text-slate-400 uppercase block mb-1">
+                <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">
                   Dispatch Warehouse:
-                </span>
-                <div className="font-bold text-slate-900 dark:text-white text-xs">
-                  {reviewOrder.warehouseName || 'Central Hub'}
-                </div>
-                <div className="text-[11px] text-slate-500">
+                </label>
+                <select
+                  value={reviewWarehouseId}
+                  onChange={(e) => {
+                    const selectedId = e.target.value;
+                    const found = warehouses.find((w) => String(w.id) === selectedId);
+                    setReviewWarehouseId(selectedId);
+                    setReviewWarehouseName(found?.name || reviewWarehouseName || 'Central Hub');
+                  }}
+                  className="w-full px-2.5 py-1.5 rounded-lg border border-blue-300 dark:border-blue-700 bg-white dark:bg-slate-800 font-bold text-slate-900 dark:text-white text-xs focus:outline-hidden focus:ring-2 focus:ring-blue-500/30 cursor-pointer"
+                >
+                  {warehouses.map((w) => (
+                    <option key={w.id} value={String(w.id)}>
+                      {w.name}
+                    </option>
+                  ))}
+                  {reviewWarehouseId &&
+                    !warehouses.some((w) => String(w.id) === String(reviewWarehouseId)) && (
+                      <option value={reviewWarehouseId}>
+                        {reviewWarehouseName || 'Central Hub'}
+                      </option>
+                    )}
+                  {!reviewWarehouseId && warehouses.length === 0 && (
+                    <option value="">{reviewWarehouseName || 'Central Hub'}</option>
+                  )}
+                </select>
+                <div className="text-[11px] text-slate-500 mt-1">
                   Salesperson: {reviewOrder.salespersonName || 'Direct Booking'}
                 </div>
               </div>
@@ -1978,7 +2024,11 @@ export const SalesOrdersRegistryModule: React.FC<SalesOrdersRegistryModuleProps>
               <button
                 type="button"
                 onClick={() => {
-                  handleOpenInvoiceModal(reviewOrder);
+                  handleOpenInvoiceModal({
+                    ...reviewOrder,
+                    warehouseId: reviewWarehouseId || reviewOrder.warehouseId,
+                    warehouseName: reviewWarehouseName || reviewOrder.warehouseName,
+                  });
                 }}
                 className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 font-semibold text-xs cursor-pointer transition-colors"
                 title="View printable tax invoice copy"

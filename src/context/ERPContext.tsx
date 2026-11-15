@@ -15644,6 +15644,27 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (updatedOrderData?.dueAmountBDT !== undefined) {
         updatePayload.due_amount_bdt = updatedOrderData.dueAmountBDT;
       }
+      if (updatedOrderData?.warehouseId !== undefined || updatedOrderData?.warehouseName !== undefined) {
+        let whIdNum: number | null = null;
+        if (updatedOrderData.warehouseId && /^\d+$/.test(String(updatedOrderData.warehouseId))) {
+          whIdNum = Number(updatedOrderData.warehouseId);
+        } else {
+          const matchedWh = warehouses.find(
+            (w) =>
+              w.id === updatedOrderData.warehouseId ||
+              w.name === updatedOrderData.warehouseName
+          );
+          if (matchedWh && /^\d+$/.test(String(matchedWh.id))) {
+            whIdNum = Number(matchedWh.id);
+          }
+        }
+        if (whIdNum !== null) {
+          updatePayload.warehouse_id = whIdNum;
+        }
+        if (updatedOrderData.warehouseName !== undefined) {
+          updatePayload.warehouse_name = updatedOrderData.warehouseName;
+        }
+      }
       if (updatedOrderData?.notes !== undefined) {
         updatePayload.notes = updatedOrderData.notes;
       }
