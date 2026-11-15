@@ -33,6 +33,7 @@ import {
   RefreshCw,
   HelpCircle,
   MapPin,
+  Edit3,
 } from 'lucide-react';
 import { useERP } from '../../context/ERPContext.tsx';
 import { CRMLeadAgreement } from '../../types/erp.ts';
@@ -87,6 +88,7 @@ export const CRMAgreementsPage: React.FC = () => {
     bulkAddCRMLeads,
     syncAllCRMLeadsToSupabase,
     addCRMCommunicationNote,
+    updateCRMDeal,
     updateCRMDealStage,
     deleteCRMDeal,
     refreshCRMAgreements,
@@ -184,7 +186,107 @@ export const CRMAgreementsPage: React.FC = () => {
   const [dealSalesperson, setDealSalesperson] = useState(currentUser?.name || 'Tanvir Hossain');
   const [initialNote, setInitialNote] = useState('');
 
+  // Form State for Edit Deal
+  const [editingDeal, setEditingDeal] = useState<CRMLeadAgreement | null>(null);
+  const [editClientName, setEditClientName] = useState('');
+  const [editCompanyName, setEditCompanyName] = useState('');
+  const [editPhone, setEditPhone] = useState('');
+  const [editAddress, setEditAddress] = useState('');
+  const [editVolumeUnits, setEditVolumeUnits] = useState('');
+  const [editEstValueBDT, setEditEstValueBDT] = useState('');
+  const [editTermMonths, setEditTermMonths] = useState('');
+  const [editStage, setEditStage] = useState<CRMLeadAgreement['stage']>('Lead');
+  const [editSalesperson, setEditSalesperson] = useState('');
+  const [editLastContactDate, setEditLastContactDate] = useState('');
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const openEditDealModal = (deal: CRMLeadAgreement) => {
+    setEditingDeal(deal);
+    setEditClientName(deal.clientName || '');
+    setEditCompanyName(deal.companyName || '');
+    setEditPhone(deal.phone || '');
+    setEditAddress(deal.address || '');
+    setEditVolumeUnits(
+      deal.expectedVolumeUnits !== null && deal.expectedVolumeUnits !== undefined
+        ? String(deal.expectedVolumeUnits)
+        : ''
+    );
+    setEditEstValueBDT(
+      deal.estimatedValueBDT !== null && deal.estimatedValueBDT !== undefined
+        ? String(deal.estimatedValueBDT)
+        : ''
+    );
+    setEditTermMonths(
+      deal.contractTermMonths !== null && deal.contractTermMonths !== undefined
+        ? String(deal.contractTermMonths)
+        : ''
+    );
+    setEditStage(deal.stage || 'Lead');
+    setEditSalesperson(deal.salespersonName || currentUser?.name || 'Tanvir Hossain');
+    setEditLastContactDate(deal.lastContactDate || new Date().toISOString().substring(0, 10));
+    setEditError(null);
+  };
+
+  const handleSaveEditDeal = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingDeal || isSavingEdit) return;
+    if (!editClientName.trim() || !editCompanyName.trim()) {
+      setEditError('Project / Agreement Title and Company Name are required.');
+      return;
+    }
+
+    const parseNullableInput = (raw: string): number | null => {
+      const trimmed = raw.trim();
+      if (!trimmed) return null;
+      const n = Number(trimmed);
+      return Number.isFinite(n) ? n : null;
+    };
+
+    const parsedValue = parseNullableInput(editEstValueBDT);
+    setIsSavingEdit(true);
+    setEditError(null);
+
+    try {
+      const res = await updateCRMDeal(editingDeal.id, {
+        clientName: editClientName.trim(),
+        companyName: editCompanyName.trim(),
+        phone: editPhone.trim(),
+        address: editAddress.trim(),
+        expectedVolumeUnits: parseNullableInput(editVolumeUnits),
+        estimatedValueBDT: parsedValue,
+        dealValueBDT: parsedValue,
+        contractTermMonths: parseNullableInput(editTermMonths),
+        stage: editStage,
+        salespersonName: editSalesperson.trim() || currentUser?.name || 'Tanvir Hossain',
+        lastContactDate: editLastContactDate || editingDeal.lastContactDate,
+      });
+
+      if (res && res.success === false) {
+        setEditError(res.error || 'Failed to update agreement.');
+        setIsSavingEdit(false);
+        return;
+      }
+
+      setSelectedDealId(editingDeal.id);
+      setEditingDeal(null);
+      setActionNotice({
+        type: res?.isRemoteSynced ? 'success' : 'info',
+        message: res?.isRemoteSynced
+          ? `Agreement "${editClientName.trim()}" updated and synced to Supabase!`
+          : res?.error
+          ? `Updated locally. Supabase sync notice: ${res.error}`
+          : `Agreement "${editClientName.trim()}" updated!`,
+      });
+      setTimeout(() => setActionNotice(null), 5000);
+    } catch (err: any) {
+      setEditError(err?.message || 'Failed to update agreement.');
+    } finally {
+      setIsSavingEdit(false);
+    }
+  };
 
   // Selected Deal
   const selectedDeal = crmAgreements.find((d) => d.id === selectedDealId) || crmAgreements[0] || null;
@@ -1081,10 +1183,24 @@ export const CRMAgreementsPage: React.FC = () => {
                         <span className={`w-1.5 h-1.5 rounded-full ${stageStyle.dot}`} />
                         {stageStyle.label}
                       </span>
-                      <span className="text-[10px] text-slate-400 font-mono flex items-center gap-1">
-                        <Clock className="w-3 h-3" />
-                        {deal.lastContactDate || 'Recent'}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-slate-400 font-mono flex items-center gap-1">
+                          <Clock className="w-3 h-3" />
+                          {deal.lastContactDate || 'Recent'}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedDealId(deal.id);
+                            openEditDealModal(deal);
+                          }}
+                          className="p-1 rounded-lg text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40 transition-colors cursor-pointer"
+                          title="Edit Agreement"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
 
                     <div>
@@ -1180,8 +1296,18 @@ export const CRMAgreementsPage: React.FC = () => {
                   </select>
 
                   <button
+                    type="button"
+                    onClick={() => openEditDealModal(selectedDeal)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-blue-200 dark:border-blue-800/60 bg-blue-50 hover:bg-blue-100 dark:bg-blue-950/40 dark:hover:bg-blue-900/40 text-blue-700 dark:text-blue-300 text-xs font-semibold transition-colors cursor-pointer"
+                    title="Edit Agreement Details"
+                  >
+                    <Edit3 className="w-3.5 h-3.5" />
+                    <span>Edit</span>
+                  </button>
+
+                  <button
                     onClick={() => handleDelete(selectedDeal)}
-                    className="p-1.5 rounded-xl text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors"
+                    className="p-1.5 rounded-xl text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors cursor-pointer"
                     title="Delete Agreement"
                   >
                     <Trash2 className="w-4 h-4" />
@@ -1872,6 +1998,218 @@ export const CRMAgreementsPage: React.FC = () => {
                   className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold shadow-xs cursor-pointer"
                 >
                   Create Agreement Lead
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 3: EDIT EXISTING AGREEMENT */}
+      {editingDeal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in">
+          <div className="w-full max-w-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-xl p-6 space-y-4 max-h-[90vh] overflow-y-auto text-xs">
+            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 rounded-lg bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400">
+                  <Edit3 className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm text-slate-900 dark:text-white">
+                    Edit CRM Agreement
+                  </h3>
+                  <p className="text-[11px] text-slate-400 font-mono">
+                    ID: {editingDeal.id}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => !isSavingEdit && setEditingDeal(null)}
+                disabled={isSavingEdit}
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer disabled:opacity-40"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {editError && (
+              <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{editError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleSaveEditDeal} className="space-y-3.5">
+              <div>
+                <label className="font-semibold text-slate-700 dark:text-slate-300 block mb-1">
+                  Project / Agreement Title *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editClientName}
+                  onChange={(e) => setEditClientName(e.target.value)}
+                  className="w-full p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="font-semibold text-slate-700 dark:text-slate-300 block mb-1">
+                    Company / Institutional Customer *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={editCompanyName}
+                    onChange={(e) => setEditCompanyName(e.target.value)}
+                    className="w-full p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-semibold text-slate-700 dark:text-slate-300 block mb-1">
+                    Contact Phone *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={editPhone}
+                    onChange={(e) => setEditPhone(e.target.value)}
+                    className="w-full p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="font-semibold text-slate-700 dark:text-slate-300 block mb-1">
+                  Customer / Site Address
+                </label>
+                <input
+                  type="text"
+                  value={editAddress}
+                  onChange={(e) => setEditAddress(e.target.value)}
+                  placeholder="Customer / site address"
+                  className="w-full p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="font-semibold text-slate-700 dark:text-slate-300 block mb-1">
+                    Volume (Units)
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    value={editVolumeUnits}
+                    onChange={(e) => setEditVolumeUnits(e.target.value)}
+                    placeholder="Blank if N/A"
+                    className="w-full p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-semibold text-slate-700 dark:text-slate-300 block mb-1">
+                    Estimated Value (BDT)
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    value={editEstValueBDT}
+                    onChange={(e) => setEditEstValueBDT(e.target.value)}
+                    placeholder="Blank if N/A"
+                    className="w-full p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono font-bold"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-semibold text-slate-700 dark:text-slate-300 block mb-1">
+                    Contract Term (Months)
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={editTermMonths}
+                    onChange={(e) => setEditTermMonths(e.target.value)}
+                    placeholder="Blank if N/A"
+                    className="w-full p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="font-semibold text-slate-700 dark:text-slate-300 block mb-1">
+                    Pipeline Stage
+                  </label>
+                  <select
+                    value={editStage}
+                    onChange={(e) => setEditStage(e.target.value as CRMLeadAgreement['stage'])}
+                    className="w-full p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white cursor-pointer"
+                  >
+                    <option value="Lead">Lead</option>
+                    <option value="Contacted">Contacted</option>
+                    <option value="Proposal Sent">Proposal Sent</option>
+                    <option value="Agreement Signed">Agreement Signed</option>
+                    <option value="Lost">Lost / Closed</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="font-semibold text-slate-700 dark:text-slate-300 block mb-1">
+                    Salesperson
+                  </label>
+                  <input
+                    type="text"
+                    value={editSalesperson}
+                    onChange={(e) => setEditSalesperson(e.target.value)}
+                    className="w-full p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-semibold text-slate-700 dark:text-slate-300 block mb-1">
+                    Contact Date
+                  </label>
+                  <input
+                    type="date"
+                    value={editLastContactDate}
+                    onChange={(e) => setEditLastContactDate(e.target.value)}
+                    className="w-full p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-200 dark:border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setEditingDeal(null)}
+                  disabled={isSavingEdit}
+                  className="px-4 py-2 rounded-xl text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold cursor-pointer disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingEdit}
+                  className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold shadow-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-60"
+                >
+                  {isSavingEdit ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Saving...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Check className="w-3.5 h-3.5" />
+                      <span>Save Changes</span>
+                    </>
+                  )}
                 </button>
               </div>
             </form>
