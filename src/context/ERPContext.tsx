@@ -883,6 +883,7 @@ interface ERPContextType {
   markAllNotificationsAsRead: () => void;
   deleteInstallmentPlan?: (planId: string) => void;
   clearInstallmentData: () => void;
+  refreshInstallmentData: () => Promise<void>;
 }
 
 const ERPContext = createContext<ERPContextType | undefined>(undefined);
@@ -4558,6 +4559,204 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  const refreshInstallmentData = async () => {
+    const sb = getSupabase();
+    if (!sb) return;
+
+    try {
+      const [plansRes, schedulesRes, paymentsRes, assignmentsRes, followupsRes, notifsRes] =
+        await Promise.all([
+          sb.from('installment_plans').select('*').order('created_at', { ascending: false }),
+          sb.from('installment_schedules').select('*').order('installment_number', { ascending: true }),
+          sb.from('installment_payments').select('*').order('created_at', { ascending: false }),
+          sb.from('collection_assignments').select('*').order('created_at', { ascending: false }),
+          sb.from('collection_followups').select('*').order('created_at', { ascending: false }),
+          sb.from('installment_notifications').select('*').order('created_at', { ascending: false }).limit(100),
+        ]);
+
+      if (!plansRes.error && Array.isArray(plansRes.data)) {
+        const mappedPlans: InstallmentPlan[] = plansRes.data.map((row: any) => ({
+          id: String(row.id),
+          agreementNo: row.agreement_no || '',
+          customerId: row.customer_id ? String(row.customer_id) : '',
+          customerName: row.customer_name || '',
+          customerPhone: row.customer_phone || '',
+          customerDistrict: row.customer_district || 'Dhaka',
+          distributorId: row.distributor_id ? String(row.distributor_id) : undefined,
+          distributorName: row.distributor_name || undefined,
+          salesOrderId: row.sales_order_id ? String(row.sales_order_id) : undefined,
+          invoiceReference: row.invoice_reference || '',
+          productId: row.product_id ? String(row.product_id) : '',
+          productName: row.product_name || '',
+          productModel: row.product_model || '',
+          quantity: Number(row.quantity) || 1,
+          totalProductPriceBDT: Number(row.total_product_price_bdt) || 0,
+          downPaymentBDT: Number(row.down_payment_bdt) || 0,
+          financedAmountBDT: Number(row.financed_amount_bdt) || 0,
+          durationMonths: Number(row.duration_months) || 12,
+          interestRatePercent: Number(row.interest_rate_percent) || 0,
+          totalInterestBDT: Number(row.total_interest_bdt) || 0,
+          totalPayableBDT: Number(row.total_payable_bdt) || 0,
+          monthlyInstallmentBDT: Number(row.monthly_installment_bdt) || 0,
+          startDate: row.start_date ? String(row.start_date).slice(0, 10) : '',
+          firstDueDate: row.first_due_date ? String(row.first_due_date).slice(0, 10) : '',
+          paymentFrequency: (row.payment_frequency || 'Monthly') as any,
+          status: (row.status || 'Active') as any,
+          totalPaidBDT: Number(row.total_paid_bdt) || 0,
+          totalOutstandingBDT: Number(row.total_outstanding_bdt) || 0,
+          paidInstallmentsCount: Number(row.paid_installments_count) || 0,
+          remainingInstallmentsCount: Number(row.remaining_installments_count) || 0,
+          overdueInstallmentsCount: Number(row.overdue_installments_count) || 0,
+          overdueAmountBDT: Number(row.overdue_amount_bdt) || 0,
+          guarantorName: row.guarantor_name || undefined,
+          guarantorPhone: row.guarantor_phone || undefined,
+          guarantorNID: row.guarantor_nid || undefined,
+          guarantorAddress: row.guarantor_address || undefined,
+          remarks: row.remarks || undefined,
+          assignedOfficerId: row.assigned_officer_id || undefined,
+          assignedOfficerName: row.assigned_officer_name || undefined,
+          createdAt: row.created_at ? String(row.created_at).slice(0, 10) : '',
+          updatedAt: row.updated_at ? String(row.updated_at).slice(0, 10) : '',
+        }));
+        setInstallmentPlans(mappedPlans);
+        if (typeof window !== 'undefined') {
+          try {
+            localStorage.setItem('ensec_installment_plans', JSON.stringify(mappedPlans));
+            localStorage.setItem('ensec_installment_test_purged_v2', 'true');
+          } catch {}
+        }
+      } else if (plansRes.error) {
+        console.warn('Supabase refreshInstallmentData (plans) notice:', plansRes.error.message);
+      }
+
+      if (!schedulesRes.error && Array.isArray(schedulesRes.data)) {
+        const mappedSchedules: InstallmentSchedule[] = schedulesRes.data.map((row: any) => ({
+          id: String(row.id),
+          planId: String(row.plan_id),
+          agreementNo: row.agreement_no || '',
+          installmentNumber: Number(row.installment_number) || 1,
+          dueDate: row.due_date ? String(row.due_date).slice(0, 10) : '',
+          dueAmountBDT: Number(row.due_amount_bdt) || 0,
+          principalAmountBDT: Number(row.principal_amount_bdt) || 0,
+          interestAmountBDT: Number(row.interest_amount_bdt) || 0,
+          paidAmountBDT: Number(row.paid_amount_bdt) || 0,
+          remainingAmountBDT: Number(row.remaining_amount_bdt) || 0,
+          status: (row.status || 'Upcoming') as any,
+          paymentDate: row.payment_date ? String(row.payment_date).slice(0, 10) : undefined,
+          overdueDays: Number(row.overdue_days) || 0,
+          lateFeeBDT: Number(row.late_fee_bdt) || 0,
+          lastReminderSentAt: row.last_reminder_sent_at || undefined,
+          lastReminderRuleId: row.last_reminder_rule_id || undefined,
+        }));
+        setInstallmentSchedules(mappedSchedules);
+        if (typeof window !== 'undefined') {
+          try {
+            localStorage.setItem('ensec_installment_schedules', JSON.stringify(mappedSchedules));
+          } catch {}
+        }
+      } else if (schedulesRes.error) {
+        console.warn('Supabase refreshInstallmentData (schedules) notice:', schedulesRes.error.message);
+      }
+
+      if (!paymentsRes.error && Array.isArray(paymentsRes.data)) {
+        const mappedPayments: InstallmentPayment[] = paymentsRes.data.map((row: any) => ({
+          id: String(row.id),
+          paymentReceiptNo: row.payment_receipt_no || '',
+          planId: String(row.plan_id),
+          agreementNo: row.agreement_no || '',
+          customerId: row.customer_id ? String(row.customer_id) : '',
+          customerName: row.customer_name || '',
+          amountBDT: Number(row.amount_bdt) || 0,
+          paymentType: (row.payment_type || 'Full Installment') as any,
+          paymentMethod: (row.payment_method || 'Bank Transfer') as any,
+          bankAccountId: row.bank_account_id || undefined,
+          bankAccountName: row.bank_account_name || undefined,
+          transactionReference: row.transaction_reference || '',
+          paymentDate: row.payment_date ? String(row.payment_date).slice(0, 10) : '',
+          receivedById: row.received_by_id || '',
+          receivedByName: row.received_by_name || '',
+          notes: row.notes || undefined,
+          allocations: [],
+          createdAt: row.created_at || new Date().toISOString(),
+        }));
+        setInstallmentPayments(mappedPayments);
+        if (typeof window !== 'undefined') {
+          try {
+            localStorage.setItem('ensec_installment_payments', JSON.stringify(mappedPayments));
+          } catch {}
+        }
+      } else if (paymentsRes.error) {
+        console.warn('Supabase refreshInstallmentData (payments) notice:', paymentsRes.error.message);
+      }
+
+      if (!assignmentsRes.error && Array.isArray(assignmentsRes.data)) {
+        const mappedAssignments: CollectionAssignment[] = assignmentsRes.data.map((row: any) => ({
+          id: String(row.id),
+          planId: String(row.plan_id),
+          agreementNo: row.agreement_no || '',
+          customerId: row.customer_id ? String(row.customer_id) : '',
+          customerName: row.customer_name || '',
+          assignedToId: row.assigned_to_id || '',
+          assignedToName: row.assigned_to_name || '',
+          assignedToRole: row.assigned_to_role || '',
+          assignedById: row.assigned_by_id || '',
+          assignedByName: row.assigned_by_name || '',
+          assignmentDate: row.assignment_date ? String(row.assignment_date).slice(0, 10) : '',
+          targetDate: row.target_date ? String(row.target_date).slice(0, 10) : '',
+          targetAmountBDT: Number(row.target_amount_bdt) || 0,
+          escalationLevel: (row.escalation_level || 'Level 1 (Officer)') as any,
+          status: (row.status || 'Active') as any,
+          priority: (row.priority || 'Medium') as any,
+        }));
+        setCollectionAssignments(mappedAssignments);
+      }
+
+      if (!followupsRes.error && Array.isArray(followupsRes.data)) {
+        const mappedFollowups: CollectionFollowUp[] = followupsRes.data.map((row: any) => ({
+          id: String(row.id),
+          planId: String(row.plan_id),
+          agreementNo: row.agreement_no || '',
+          customerId: row.customer_id ? String(row.customer_id) : '',
+          customerName: row.customer_name || '',
+          contactPerson: row.contact_person || '',
+          contactPhone: row.contact_phone || '',
+          activityType: (row.activity_type || 'Phone Call') as any,
+          followUpDate: row.follow_up_date ? String(row.follow_up_date).slice(0, 10) : '',
+          nextFollowUpDate: row.next_follow_up_date ? String(row.next_follow_up_date).slice(0, 10) : undefined,
+          committedAmountBDT:
+            row.committed_amount_bdt !== null && row.committed_amount_bdt !== undefined
+              ? Number(row.committed_amount_bdt)
+              : undefined,
+          committedPaymentDate: row.committed_payment_date
+            ? String(row.committed_payment_date).slice(0, 10)
+            : undefined,
+          notes: row.notes || '',
+          performedById: row.performed_by_id || '',
+          performedByName: row.performed_by_name || '',
+          status: (row.status || 'Pending') as any,
+          createdAt: row.created_at || new Date().toISOString(),
+        }));
+        setCollectionFollowUps(mappedFollowups);
+      }
+
+      if (!notifsRes.error && Array.isArray(notifsRes.data)) {
+        const mappedNotifs: InstallmentNotification[] = notifsRes.data.map((row: any) => ({
+          id: String(row.id),
+          title: row.title || '',
+          message: row.message || '',
+          type: (row.type || 'upcoming_due') as any,
+          priority: (row.priority || 'low') as any,
+          referenceId: row.reference_id || undefined,
+          isRead: Boolean(row.is_read),
+          createdAt: row.created_at ? String(row.created_at).replace('T', ' ').slice(0, 19) : '',
+        }));
+        setInstallmentNotifications(mappedNotifs);
+      }
+    } catch (err) {
+      console.warn('Supabase refreshInstallmentData error:', err);
+    }
+  };
+
   const refreshUsers = async () => {
     const sb = getSupabase();
     if (sb) {
@@ -5963,6 +6162,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       refreshOffers(),
       refreshSalesOrders(),
       refreshCRMAgreements(),
+      refreshInstallmentData(),
     ]);
   };
 
@@ -6094,6 +6294,8 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     let bomChannel: any = null;
     let poChannel: any = null;
     let officeChannel: any = null;
+    let insPlanChannel: any = null;
+    let insSchedChannel: any = null;
 
     if (sb && typeof sb.channel === 'function') {
       try {
@@ -6328,6 +6530,28 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             }
           )
           .subscribe();
+
+        insPlanChannel = sb
+          .channel('realtime:installment_plans')
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'installment_plans' },
+            () => {
+              refreshInstallmentData();
+            }
+          )
+          .subscribe();
+
+        insSchedChannel = sb
+          .channel('realtime:installment_schedules')
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'installment_schedules' },
+            () => {
+              refreshInstallmentData();
+            }
+          )
+          .subscribe();
       } catch (err) {
         console.warn('Supabase Realtime subscription notice:', err);
       }
@@ -6366,6 +6590,12 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
         if (officeChannel && sb && typeof sb.removeChannel === 'function') {
           sb.removeChannel(officeChannel);
+        }
+        if (insPlanChannel && sb && typeof sb.removeChannel === 'function') {
+          sb.removeChannel(insPlanChannel);
+        }
+        if (insSchedChannel && sb && typeof sb.removeChannel === 'function') {
+          sb.removeChannel(insSchedChannel);
         }
       };
     }
@@ -17597,39 +17827,79 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     customSchedules?: InstallmentSchedule[]
   ): Promise<{ success: boolean; id: string; error?: string }> => {
     try {
+      const sb = getSupabase();
       const year = new Date().getFullYear();
-      const planSeq = (installmentPlans.length + 1).toString().padStart(4, '0');
-      const planId = `INS-${year}-${planSeq}`;
-      const agreementNo = planData.agreementNo || `ENS-AGR-${planSeq}`;
       const today = new Date().toISOString().slice(0, 10);
 
-      let generatedSchedules: InstallmentSchedule[] = [];
+      // Collect existing IDs & agreement numbers from both local state and live Supabase DB
+      const existingPlanIds = new Set<string>(installmentPlans.map((p) => String(p.id)));
+      const existingAgreementNos = new Set<string>(installmentPlans.map((p) => String(p.agreementNo)));
+      let maxSeq = 0;
 
-      if (customSchedules && customSchedules.length > 0) {
-        generatedSchedules = customSchedules.map((s, idx) => ({
-          ...s,
-          id: s.id || `SCH-${planSeq}-${(idx + 1).toString().padStart(2, '0')}`,
-          planId,
-          agreementNo,
-        }));
-      } else {
-        // Automatically generate schedules based on duration and firstDueDate
-        const count = planData.durationMonths || 12;
+      const extractSeq = (val?: string | null) => {
+        if (!val) return 0;
+        const m = String(val).match(/(\d+)\s*$/);
+        return m ? parseInt(m[1], 10) : 0;
+      };
+
+      installmentPlans.forEach((p) => {
+        maxSeq = Math.max(maxSeq, extractSeq(p.id), extractSeq(p.agreementNo));
+      });
+
+      if (sb) {
+        const { data: dbExistingPlans, error: lookupErr } = await sb
+          .from('installment_plans')
+          .select('id, agreement_no');
+        if (!lookupErr && Array.isArray(dbExistingPlans)) {
+          dbExistingPlans.forEach((row: any) => {
+            if (row.id) existingPlanIds.add(String(row.id));
+            if (row.agreement_no) existingAgreementNos.add(String(row.agreement_no));
+            maxSeq = Math.max(maxSeq, extractSeq(row.id), extractSeq(row.agreement_no));
+          });
+        }
+      }
+
+      let nextSeq = maxSeq + 1;
+      let planSeq = nextSeq.toString().padStart(4, '0');
+      let planId = `INS-${year}-${planSeq}`;
+      let agreementNo = planData.agreementNo?.trim() || `ENS-AGR-${planSeq}`;
+
+      while (
+        existingPlanIds.has(planId) ||
+        (!planData.agreementNo?.trim() && existingAgreementNos.has(agreementNo))
+      ) {
+        nextSeq += 1;
+        planSeq = nextSeq.toString().padStart(4, '0');
+        planId = `INS-${year}-${planSeq}`;
+        agreementNo = planData.agreementNo?.trim() || `ENS-AGR-${planSeq}`;
+      }
+
+      const buildSchedulesForPlan = (targetPlanId: string, targetAgreementNo: string, seqToken: string): InstallmentSchedule[] => {
+        if (customSchedules && customSchedules.length > 0) {
+          return customSchedules.map((s, idx) => ({
+            ...s,
+            id: `SCH-${seqToken}-${(idx + 1).toString().padStart(2, '0')}`,
+            planId: targetPlanId,
+            agreementNo: targetAgreementNo,
+          }));
+        }
+
+        const count = Number(planData.durationMonths) || 12;
         const monthlyAmt = planData.monthlyInstallmentBDT || Math.round(planData.financedAmountBDT / count);
         const monthlyInterest = planData.totalInterestBDT > 0 ? Math.round(planData.totalInterestBDT / count) : 0;
         const monthlyPrincipal = monthlyAmt - monthlyInterest;
-
         const firstDue = new Date(planData.firstDueDate || today);
 
+        const list: InstallmentSchedule[] = [];
         for (let i = 1; i <= count; i++) {
           const dueDateObj = new Date(firstDue);
           dueDateObj.setMonth(dueDateObj.getMonth() + (i - 1));
           const dueDateStr = dueDateObj.toISOString().slice(0, 10);
 
-          generatedSchedules.push({
-            id: `SCH-${planSeq}-${i.toString().padStart(2, '0')}`,
-            planId,
-            agreementNo,
+          list.push({
+            id: `SCH-${seqToken}-${i.toString().padStart(2, '0')}`,
+            planId: targetPlanId,
+            agreementNo: targetAgreementNo,
             installmentNumber: i,
             dueDate: dueDateStr,
             dueAmountBDT: monthlyAmt,
@@ -17642,12 +17912,16 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             lateFeeBDT: 0,
           });
         }
-      }
+        return list;
+      };
 
-      const newPlan: InstallmentPlan = {
+      let generatedSchedules = buildSchedulesForPlan(planId, agreementNo, planSeq);
+
+      let newPlan: InstallmentPlan = {
         ...planData,
         id: planId,
         agreementNo,
+        customerPhone: planData.customerPhone?.trim() || 'N/A',
         totalPaidBDT: 0,
         totalOutstandingBDT: planData.financedAmountBDT,
         paidInstallmentsCount: 0,
@@ -17659,8 +17933,137 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updatedAt: today,
       };
 
+      // Supabase remote sync FIRST so DB failures are caught and never faked as success
+      if (sb) {
+        const buildPlanPayload = (p: InstallmentPlan) => ({
+          id: p.id,
+          agreement_no: p.agreementNo,
+          customer_id: p.customerId || null,
+          customer_name: p.customerName,
+          customer_phone: p.customerPhone || 'N/A',
+          customer_district: p.customerDistrict || 'Dhaka',
+          distributor_id: p.distributorId || null,
+          distributor_name: p.distributorName || null,
+          sales_order_id: p.salesOrderId || null,
+          invoice_reference: p.invoiceReference || null,
+          product_id: p.productId || null,
+          product_name: p.productName,
+          product_model: p.productModel || null,
+          quantity: Number(p.quantity) || 1,
+          total_product_price_bdt: Number(p.totalProductPriceBDT) || 0,
+          down_payment_bdt: Number(p.downPaymentBDT) || 0,
+          financed_amount_bdt: Number(p.financedAmountBDT) || 0,
+          duration_months: Number(p.durationMonths) || 12,
+          interest_rate_percent: Number(p.interestRatePercent) || 0,
+          total_interest_bdt: Number(p.totalInterestBDT) || 0,
+          total_payable_bdt: Number(p.totalPayableBDT) || 0,
+          monthly_installment_bdt: Number(p.monthlyInstallmentBDT) || 0,
+          start_date: p.startDate || today,
+          first_due_date: p.firstDueDate || today,
+          payment_frequency: p.paymentFrequency || 'Monthly',
+          status: p.status || 'Active',
+          total_paid_bdt: Number(p.totalPaidBDT) || 0,
+          total_outstanding_bdt: Number(p.totalOutstandingBDT) || 0,
+          paid_installments_count: Number(p.paidInstallmentsCount) || 0,
+          remaining_installments_count: Number(p.remainingInstallmentsCount) || generatedSchedules.length,
+          overdue_installments_count: Number(p.overdueInstallmentsCount) || 0,
+          overdue_amount_bdt: Number(p.overdueAmountBDT) || 0,
+          guarantor_name: p.guarantorName || null,
+          guarantor_phone: p.guarantorPhone || null,
+          guarantor_nid: p.guarantorNID || null,
+          guarantor_address: p.guarantorAddress || null,
+          remarks: p.remarks || null,
+          assigned_officer_id: p.assignedOfficerId || null,
+          assigned_officer_name: p.assignedOfficerName || null,
+        });
+
+        let { error: planError } = await sb
+          .from('installment_plans')
+          .insert(buildPlanPayload(newPlan))
+          .select()
+          .single();
+
+        // Retry once with unique suffix on race-condition duplicate key
+        if (planError && planError.code === '23505') {
+          const uniqueSeq = `${planSeq}-${Date.now().toString().slice(-4)}`;
+          planId = `INS-${year}-${uniqueSeq}`;
+          agreementNo = planData.agreementNo?.trim()
+            ? `${planData.agreementNo.trim()}-${Date.now().toString().slice(-3)}`
+            : `ENS-AGR-${uniqueSeq}`;
+          generatedSchedules = buildSchedulesForPlan(planId, agreementNo, uniqueSeq);
+          newPlan = {
+            ...newPlan,
+            id: planId,
+            agreementNo,
+          };
+          const retryRes = await sb
+            .from('installment_plans')
+            .insert(buildPlanPayload(newPlan))
+            .select()
+            .single();
+          planError = retryRes.error;
+        }
+
+        if (planError) {
+          console.error('Supabase installment_plans insert failed:', planError);
+          return {
+            success: false,
+            id: '',
+            error: `Failed to save installment plan to database: ${planError.message}`,
+          };
+        }
+
+        const buildSchedulesPayload = (scheds: InstallmentSchedule[]) =>
+          scheds.map((s) => ({
+            id: s.id,
+            plan_id: s.planId,
+            agreement_no: s.agreementNo,
+            installment_number: s.installmentNumber,
+            due_date: s.dueDate,
+            due_amount_bdt: s.dueAmountBDT,
+            principal_amount_bdt: s.principalAmountBDT,
+            interest_amount_bdt: s.interestAmountBDT,
+            paid_amount_bdt: s.paidAmountBDT,
+            remaining_amount_bdt: s.remainingAmountBDT,
+            status: s.status,
+            overdue_days: s.overdueDays,
+            late_fee_bdt: s.lateFeeBDT || 0,
+          }));
+
+        let { error: schedError } = await sb
+          .from('installment_schedules')
+          .insert(buildSchedulesPayload(generatedSchedules));
+
+        // If schedule ID collided with an orphan/legacy schedule ID, retry with unique token
+        if (schedError && schedError.code === '23505') {
+          const uniqueSchedToken = `${planSeq}-${Date.now().toString().slice(-5)}`;
+          generatedSchedules = buildSchedulesForPlan(planId, agreementNo, uniqueSchedToken);
+          const schedRetry = await sb
+            .from('installment_schedules')
+            .insert(buildSchedulesPayload(generatedSchedules));
+          schedError = schedRetry.error;
+        }
+
+        if (schedError) {
+          console.error('Supabase installment_schedules insert failed:', schedError);
+          // Roll back plan row so we do not leave an agreement without its schedule rows
+          await sb.from('installment_plans').delete().eq('id', planId);
+          return {
+            success: false,
+            id: '',
+            error: `Failed to save installment schedule to database: ${schedError.message}`,
+          };
+        }
+      }
+
+      // Update local React state and persistent storage once DB save succeeds
       setInstallmentPlans((prev) => [newPlan, ...prev]);
       setInstallmentSchedules((prev) => [...generatedSchedules, ...prev]);
+      if (typeof window !== 'undefined') {
+        try {
+          localStorage.setItem('ensec_installment_test_purged_v2', 'true');
+        } catch {}
+      }
 
       // If down payment was received, record in Cash Book and reflect on linked Sales Order
       if (newPlan.downPaymentBDT > 0) {
@@ -17710,67 +18113,20 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       };
       setInstallmentNotifications((prev) => [initialNotif, ...prev]);
 
-      // Supabase remote sync if online
-      const sb = getSupabase();
       if (sb) {
-        try {
-          await sb.from('installment_plans').insert({
-            id: newPlan.id,
-            agreement_no: newPlan.agreementNo,
-            customer_id: newPlan.customerId,
-            customer_name: newPlan.customerName,
-            customer_phone: newPlan.customerPhone,
-            customer_district: newPlan.customerDistrict,
-            distributor_id: newPlan.distributorId,
-            distributor_name: newPlan.distributorName,
-            sales_order_id: newPlan.salesOrderId,
-            invoice_reference: newPlan.invoiceReference,
-            product_id: newPlan.productId,
-            product_name: newPlan.productName,
-            product_model: newPlan.productModel,
-            quantity: newPlan.quantity,
-            total_product_price_bdt: newPlan.totalProductPriceBDT,
-            down_payment_bdt: newPlan.downPaymentBDT,
-            financed_amount_bdt: newPlan.financedAmountBDT,
-            duration_months: newPlan.durationMonths,
-            interest_rate_percent: newPlan.interestRatePercent,
-            total_interest_bdt: newPlan.totalInterestBDT,
-            total_payable_bdt: newPlan.totalPayableBDT,
-            monthly_installment_bdt: newPlan.monthlyInstallmentBDT,
-            start_date: newPlan.startDate,
-            first_due_date: newPlan.firstDueDate,
-            payment_frequency: newPlan.paymentFrequency,
-            status: newPlan.status,
-            total_paid_bdt: newPlan.totalPaidBDT,
-            total_outstanding_bdt: newPlan.totalOutstandingBDT,
-            paid_installments_count: newPlan.paidInstallmentsCount,
-            remaining_installments_count: newPlan.remainingInstallmentsCount,
-            overdue_installments_count: newPlan.overdueInstallmentsCount,
-            overdue_amount_bdt: newPlan.overdueAmountBDT,
-            guarantor_name: newPlan.guarantorName,
-            guarantor_phone: newPlan.guarantorPhone,
-            remarks: newPlan.remarks,
+        sb.from('installment_notifications')
+          .insert({
+            id: initialNotif.id,
+            title: initialNotif.title,
+            message: initialNotif.message,
+            type: initialNotif.type,
+            priority: initialNotif.priority,
+            reference_id: initialNotif.referenceId,
+            is_read: initialNotif.isRead,
+          })
+          .then(({ error }) => {
+            if (error) console.warn('Supabase notification insert notice:', error.message);
           });
-
-          const schedulesPayload = generatedSchedules.map((s) => ({
-            id: s.id,
-            plan_id: s.planId,
-            agreement_no: s.agreementNo,
-            installment_number: s.installmentNumber,
-            due_date: s.dueDate,
-            due_amount_bdt: s.dueAmountBDT,
-            principal_amount_bdt: s.principalAmountBDT,
-            interest_amount_bdt: s.interestAmountBDT,
-            paid_amount_bdt: s.paidAmountBDT,
-            remaining_amount_bdt: s.remainingAmountBDT,
-            status: s.status,
-            overdue_days: s.overdueDays,
-          }));
-
-          await sb.from('installment_schedules').insert(schedulesPayload);
-        } catch (sbErr) {
-          console.warn('Supabase remote installment plan sync notice:', sbErr);
-        }
       }
 
       return { success: true, id: planId };
@@ -17805,9 +18161,31 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
 
       const today = new Date().toISOString().slice(0, 10);
+      const year = new Date().getFullYear();
       const paymentId = `PAY-INS-${Date.now().toString().slice(-6)}`;
-      const receiptSeq = (installmentPayments.length + 101).toString();
-      const paymentReceiptNo = `RCP-2026-${receiptSeq}`;
+
+      const sb = getSupabase();
+      let maxReceiptNum = 100;
+      const extractReceiptSeq = (val?: string | null) => {
+        if (!val) return 0;
+        const m = String(val).match(/(\d+)\s*$/);
+        return m ? parseInt(m[1], 10) : 0;
+      };
+      installmentPayments.forEach((p) => {
+        maxReceiptNum = Math.max(maxReceiptNum, extractReceiptSeq(p.paymentReceiptNo));
+      });
+      if (sb) {
+        const { data: existingReceipts } = await sb
+          .from('installment_payments')
+          .select('payment_receipt_no');
+        if (Array.isArray(existingReceipts)) {
+          existingReceipts.forEach((r: any) => {
+            maxReceiptNum = Math.max(maxReceiptNum, extractReceiptSeq(r.payment_receipt_no));
+          });
+        }
+      }
+      const receiptSeq = (maxReceiptNum + 1).toString();
+      const paymentReceiptNo = paymentData.paymentReceiptNo || `RCP-${year}-${receiptSeq}`;
 
       // Run FIFO allocation on plan's unpaid schedules
       const planSchedules = installmentSchedules.filter((s) => s.planId === paymentData.planId);
@@ -17941,39 +18319,44 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setInstallmentNotifications((prev) => [paymentNotif, ...prev]);
 
       // 5. Remote Supabase sync if online
-      const sb = getSupabase();
       if (sb) {
         try {
-          await sb.from('installment_payments').insert({
+          const { error: payErr } = await sb.from('installment_payments').insert({
             id: newPayment.id,
             payment_receipt_no: newPayment.paymentReceiptNo,
             plan_id: newPayment.planId,
             agreement_no: newPayment.agreementNo,
-            customer_id: newPayment.customerId,
+            customer_id: newPayment.customerId || null,
             customer_name: newPayment.customerName,
             amount_bdt: newPayment.amountBDT,
             payment_type: newPayment.paymentType,
             payment_method: newPayment.paymentMethod,
-            bank_account_id: newPayment.bankAccountId,
-            bank_account_name: newPayment.bankAccountName,
+            bank_account_id: newPayment.bankAccountId || null,
+            bank_account_name: newPayment.bankAccountName || null,
             transaction_reference: newPayment.transactionReference,
             payment_date: newPayment.paymentDate,
-            received_by_id: newPayment.receivedById,
-            received_by_name: newPayment.receivedByName,
-            notes: newPayment.notes,
+            received_by_id: newPayment.receivedById || null,
+            received_by_name: newPayment.receivedByName || null,
+            notes: newPayment.notes || null,
           });
+          if (payErr) {
+            console.error('Supabase installment_payments insert failed:', payErr);
+          }
 
           for (const s of updatedSchedules) {
-            await sb.from('installment_schedules').update({
+            const { error: schUpdErr } = await sb.from('installment_schedules').update({
               paid_amount_bdt: s.paidAmountBDT,
               remaining_amount_bdt: s.remainingAmountBDT,
               status: s.status,
-              payment_date: s.paymentDate,
+              payment_date: s.paymentDate || null,
               overdue_days: s.overdueDays,
             }).eq('id', s.id);
+            if (schUpdErr) {
+              console.error('Supabase installment_schedules update failed:', schUpdErr);
+            }
           }
 
-          await sb.from('installment_plans').update({
+          const { error: planUpdErr } = await sb.from('installment_plans').update({
             total_paid_bdt: updatedPlan.totalPaidBDT,
             total_outstanding_bdt: updatedPlan.totalOutstandingBDT,
             paid_installments_count: updatedPlan.paidInstallmentsCount,
@@ -17982,6 +18365,9 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             overdue_amount_bdt: updatedPlan.overdueAmountBDT,
             status: updatedPlan.status,
           }).eq('id', updatedPlan.id);
+          if (planUpdErr) {
+            console.error('Supabase installment_plans update failed:', planUpdErr);
+          }
         } catch (sbErr) {
           console.warn('Supabase remote payment sync notice:', sbErr);
         }
@@ -18041,6 +18427,42 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updatedAt: today,
       };
 
+      const sb = getSupabase();
+      if (sb) {
+        const { error: planSettleErr } = await sb
+          .from('installment_plans')
+          .update({
+            status: updatedPlan.status,
+            total_paid_bdt: updatedPlan.totalPaidBDT,
+            total_outstanding_bdt: updatedPlan.totalOutstandingBDT,
+            paid_installments_count: updatedPlan.paidInstallmentsCount,
+            remaining_installments_count: updatedPlan.remainingInstallmentsCount,
+            overdue_installments_count: 0,
+            overdue_amount_bdt: 0,
+            remarks: updatedPlan.remarks,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', planId);
+
+        if (planSettleErr) {
+          return { success: false, error: `Failed to settle plan in database: ${planSettleErr.message}` };
+        }
+
+        const newlyPaidSchedules = updatedSchedules.filter((s) => s.planId === planId && s.paymentDate === today);
+        for (const s of newlyPaidSchedules) {
+          await sb
+            .from('installment_schedules')
+            .update({
+              paid_amount_bdt: s.paidAmountBDT,
+              remaining_amount_bdt: 0,
+              status: 'Paid',
+              payment_date: today,
+              overdue_days: 0,
+            })
+            .eq('id', s.id);
+        }
+      }
+
       setInstallmentSchedules(updatedSchedules);
       setInstallmentPlans((prev) => prev.map((p) => (p.id === planId ? updatedPlan : p)));
 
@@ -18090,6 +18512,32 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setCollectionFollowUps((prev) => [newFollowUp, ...prev]);
 
+    const sb = getSupabase();
+    if (sb) {
+      sb.from('collection_followups')
+        .insert({
+          id: newFollowUp.id,
+          plan_id: newFollowUp.planId,
+          agreement_no: newFollowUp.agreementNo,
+          customer_id: newFollowUp.customerId || null,
+          customer_name: newFollowUp.customerName,
+          contact_person: newFollowUp.contactPerson,
+          contact_phone: newFollowUp.contactPhone,
+          activity_type: newFollowUp.activityType,
+          follow_up_date: newFollowUp.followUpDate,
+          next_follow_up_date: newFollowUp.nextFollowUpDate || null,
+          committed_amount_bdt: newFollowUp.committedAmountBDT ?? null,
+          committed_payment_date: newFollowUp.committedPaymentDate || null,
+          notes: newFollowUp.notes,
+          performed_by_id: newFollowUp.performedById,
+          performed_by_name: newFollowUp.performedByName,
+          status: newFollowUp.status,
+        })
+        .then(({ error }) => {
+          if (error) console.warn('Supabase collection_followups insert notice:', error.message);
+        });
+    }
+
     // Update assignment target date and status if committed
     if (newFollowUp.committedPaymentDate) {
       setCollectionAssignments((prev) =>
@@ -18103,6 +18551,17 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             : a
         )
       );
+      if (sb) {
+        sb.from('collection_assignments')
+          .update({
+            target_date: newFollowUp.committedPaymentDate,
+            priority: 'High',
+          })
+          .eq('plan_id', newFollowUp.planId)
+          .then(({ error }) => {
+            if (error) console.warn('Supabase collection_assignments update notice:', error.message);
+          });
+      }
     }
 
     addAuditLog(
@@ -18118,6 +18577,24 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setCollectionAssignments((prev) =>
       prev.map((a) => (a.id === assignmentId ? { ...a, ...updates } : a))
     );
+    const sb = getSupabase();
+    if (sb) {
+      const dbPatch: Record<string, any> = { updated_at: new Date().toISOString() };
+      if (updates.assignedToId !== undefined) dbPatch.assigned_to_id = updates.assignedToId;
+      if (updates.assignedToName !== undefined) dbPatch.assigned_to_name = updates.assignedToName;
+      if (updates.assignedToRole !== undefined) dbPatch.assigned_to_role = updates.assignedToRole;
+      if (updates.targetDate !== undefined) dbPatch.target_date = updates.targetDate;
+      if (updates.targetAmountBDT !== undefined) dbPatch.target_amount_bdt = updates.targetAmountBDT;
+      if (updates.escalationLevel !== undefined) dbPatch.escalation_level = updates.escalationLevel;
+      if (updates.status !== undefined) dbPatch.status = updates.status;
+      if (updates.priority !== undefined) dbPatch.priority = updates.priority;
+      sb.from('collection_assignments')
+        .update(dbPatch)
+        .eq('id', assignmentId)
+        .then(({ error }) => {
+          if (error) console.warn('Supabase collection_assignments update notice:', error.message);
+        });
+    }
     addAuditLog('COLLECTION_ASSIGNMENT_UPDATED', 'Collection Management', `Updated assignment ID ${assignmentId}`);
   };
 
@@ -18125,6 +18602,31 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const id = `ASN-${Date.now().toString().slice(-5)}`;
     const newAssign: CollectionAssignment = { ...assignment, id };
     setCollectionAssignments((prev) => [newAssign, ...prev]);
+    const sb = getSupabase();
+    if (sb) {
+      sb.from('collection_assignments')
+        .insert({
+          id: newAssign.id,
+          plan_id: newAssign.planId,
+          agreement_no: newAssign.agreementNo,
+          customer_id: newAssign.customerId || null,
+          customer_name: newAssign.customerName,
+          assigned_to_id: newAssign.assignedToId,
+          assigned_to_name: newAssign.assignedToName,
+          assigned_to_role: newAssign.assignedToRole,
+          assigned_by_id: newAssign.assignedById || null,
+          assigned_by_name: newAssign.assignedByName || null,
+          assignment_date: newAssign.assignmentDate,
+          target_date: newAssign.targetDate,
+          target_amount_bdt: newAssign.targetAmountBDT,
+          escalation_level: newAssign.escalationLevel,
+          status: newAssign.status,
+          priority: newAssign.priority,
+        })
+        .then(({ error }) => {
+          if (error) console.warn('Supabase collection_assignments insert notice:', error.message);
+        });
+    }
     addAuditLog('COLLECTION_ASSIGNMENT_CREATED', 'Collection Management', `Assigned ${newAssign.customerName} to ${newAssign.assignedToName}`);
     return id;
   };
@@ -18209,16 +18711,33 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setInstallmentNotifications((prev) =>
       prev.map((n) => (n.id === id ? { ...n, isRead: true } : n))
     );
+    const sb = getSupabase();
+    if (sb) {
+      sb.from('installment_notifications').update({ is_read: true }).eq('id', id).then(() => {});
+    }
   };
 
   const markAllNotificationsAsRead = () => {
     setInstallmentNotifications((prev) => prev.map((n) => ({ ...n, isRead: true })));
+    const sb = getSupabase();
+    if (sb) {
+      sb.from('installment_notifications').update({ is_read: true }).eq('is_read', false).then(() => {});
+    }
   };
 
   const deleteInstallmentPlan = (planId: string) => {
     setInstallmentPlans((prev) => prev.filter((p) => p.id !== planId));
     setInstallmentSchedules((prev) => prev.filter((s) => s.planId !== planId));
     setCollectionAssignments((prev) => prev.filter((a) => a.planId !== planId));
+    const sb = getSupabase();
+    if (sb) {
+      sb.from('installment_plans')
+        .delete()
+        .eq('id', planId)
+        .then(({ error }) => {
+          if (error) console.warn('Supabase installment_plans delete notice:', error.message);
+        });
+    }
     addAuditLog('INSTALLMENT_PLAN_DELETED', 'Installment & Receivables', `Deleted plan ID ${planId}`);
   };
 
@@ -21147,6 +21666,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         markAllNotificationsAsRead,
         deleteInstallmentPlan,
         clearInstallmentData,
+        refreshInstallmentData,
         // Central Payroll Management
         officeLocations,
         addOfficeLocation,

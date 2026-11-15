@@ -7,7 +7,7 @@
  * early settlement calculator, and executive dashboard analytics.
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   CreditCard,
   Plus,
@@ -77,9 +77,28 @@ export const InstallmentManagementModule: React.FC<InstallmentManagementModulePr
     runAutomationCheckNow,
     deleteInstallmentPlan,
     clearInstallmentData,
+    refreshInstallmentData,
   } = useERP();
 
-  const [activeTab, setActiveTab] = useState<string>(initialSubTab);
+  const VALID_SUB_TABS = new Set([
+    'installment-dashboard',
+    'installment-new-plan',
+    'installment-agreements',
+    'installment-schedule',
+    'installment-customers',
+    'installment-due',
+    'installment-overdue',
+    'installment-payment-collection',
+    'installment-payment-history',
+    'installment-early-settlement',
+  ]);
+  const [activeTab, setActiveTab] = useState<string>(
+    VALID_SUB_TABS.has(initialSubTab) ? initialSubTab : 'installment-dashboard'
+  );
+
+  useEffect(() => {
+    refreshInstallmentData?.();
+  }, []);
 
   // Clear Local Data Confirmation State
   const [showClearConfirm, setShowClearConfirm] = useState(false);
@@ -444,7 +463,8 @@ export const InstallmentManagementModule: React.FC<InstallmentManagementModulePr
         setTimeout(() => {
           setIsSubmittingPlan(false);
           setActiveTab('installment-agreements');
-        }, 1200);
+          onNavigate?.('installment-agreements');
+        }, 900);
       } else {
         setPlanFormFeedback({ type: 'error', message: res.error || 'Failed to create plan.' });
         setIsSubmittingPlan(false);
