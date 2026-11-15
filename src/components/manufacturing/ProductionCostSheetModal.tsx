@@ -11,7 +11,7 @@ import { useERP } from '../../context/ERPContext';
 import { 
   Calculator, Layers, CheckCircle2, X, Printer, Download, 
   TrendingUp, AlertTriangle, ArrowRight, DollarSign, Cpu, FileSpreadsheet,
-  Building, Calendar, Clock, PackageCheck, BookOpen, ShieldCheck, ShieldAlert, Tag, Loader2, Lock
+  Building, Calendar, Clock, PackageCheck, BookOpen, ShieldCheck, ShieldAlert, Tag, Lock
 } from 'lucide-react';
 import { ProductionOrder, ProductionCostRecord } from '../../types/erp';
 import { ProductionCostDetailedRecord } from '../../types/costing';
@@ -31,17 +31,13 @@ interface ProductionCostSheetModalProps {
 export const ProductionCostSheetModal: React.FC<ProductionCostSheetModalProps> = ({
   order,
   onClose,
-  onReceiveFinishedGoods
 }) => {
   const { 
     getProductionCostBreakdown,
     calculateProductionCost, 
     saveProductionCost,
-    confirmFinishedGoodsReceive,
     productionOrders,
     finishedGoodsProductionReceipts,
-    refreshProductionOrders,
-    refreshFinishedGoodsReceipts,
     currentUser,
     productionConsumptions, 
     costAllocations,
@@ -50,12 +46,8 @@ export const ProductionCostSheetModal: React.FC<ProductionCostSheetModalProps> =
 
   const [valuationMethod, setValuationMethod] = useState<'FIFO' | 'WEIGHTED_AVERAGE'>('FIFO');
   const [activeSubTab, setActiveSubTab] = useState<'cost-sheet' | 'raw-materials' | 'expense-allocations' | 'journal-entries'>('cost-sheet');
-  const [receiveSuccess, setReceiveSuccess] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  const [isReceiving, setIsReceiving] = useState(false);
-  const [receiveError, setReceiveError] = useState<string | null>(null);
-  const [showReceiveConfirmModal, setShowReceiveConfirmModal] = useState(false);
   const [serverDeniedReason, setServerDeniedReason] = useState<string | null>(null);
 
   const hasCostSheetPermission = canViewManufacturingCostSheet(currentUser);
@@ -145,7 +137,6 @@ export const ProductionCostSheetModal: React.FC<ProductionCostSheetModalProps> =
 
   // Authoritative check if this production order's finished goods have already been received
   const isAlreadyReceived = useMemo(() => {
-    if (receiveSuccess) return true;
     if (currentOrder.fgReceivingStatus === 'Fully Received') return true;
     if (typeof currentOrder.receivedFgQty === 'number' && currentOrder.receivedFgQty >= totalOrderQty && totalOrderQty > 0) return true;
     if (currentOrder.remainingFgQty !== undefined && currentOrder.remainingFgQty <= 0 && (currentOrder.receivedFgQty || 0) > 0) return true;
@@ -158,7 +149,7 @@ export const ProductionCostSheetModal: React.FC<ProductionCostSheetModalProps> =
           r.productionOrderNumber.trim().toLowerCase() === order.orderNumber.trim().toLowerCase())
     );
     return Boolean(matchingReceipt);
-  }, [currentOrder, totalOrderQty, finishedGoodsProductionReceipts, receiveSuccess, order]);
+  }, [currentOrder, totalOrderQty, finishedGoodsProductionReceipts, order]);
 
   const handlePrint = () => {
     if (!canExportCostSheet) return;
@@ -215,69 +206,6 @@ export const ProductionCostSheetModal: React.FC<ProductionCostSheetModalProps> =
       console.error('Error saving cost sheet:', err);
     } finally {
       setIsSaving(false);
-    }
-  };
-
-  const handleDirectReceive = async () => {
-    if (isAlreadyReceived || isReceiving) return;
-    setIsReceiving(true);
-    setReceiveError(null);
-    try {
-      // 1. Calculate and save cost sheet
-      const costRecord = calculateProductionCost(order.id, valuationMethod, true);
-      if (saveProductionCost) {
-        await saveProductionCost(costRecord);
-      }
-
-      // 2. Authoritative finished goods receipt via confirmFinishedGoodsReceive
-      // (persists to Supabase finished_goods_receipts, stock_cid_receipts, stock_inventory, warehouses, production_orders)
-      const receiveQty = Number(detailedRecord.goodFinishedQty || currentOrder.completedQty || currentOrder.plannedQty || 1);
-      const unitCost = Number(detailedRecord.actualUnitProductionCost || costRecord.unitProductionCostBDT || 0);
-      const totalCost = Number(detailedRecord.totalManufacturingCost || costRecord.totalProductionCostBDT || (unitCost * receiveQty));
-      const year = new Date().getFullYear();
-      const mrrNo = `MRR-FG-${year}-${Math.floor(1000 + Math.random() * 9000)}`;
-
-      const res = await confirmFinishedGoodsReceive({
-        productionOrderId: String(order.id),
-        warehouseId: order.warehouseId || 'wh-kushtia',
-        warehouseName: order.warehouseName || 'Kushtia Manufacturing Plant',
-        receivedQty: receiveQty,
-        unitCostBDT: unitCost,
-        totalCostBDT: totalCost,
-        batchNumber: detailedRecord.batchNumber || order.batchNumber,
-        productName: detailedRecord.productName || order.productName,
-        productCode: order.productCode || detailedRecord.productSku || 'FG00001',
-        mrrNumber: mrrNo,
-        receiptDate: new Date().toISOString().substring(0, 10),
-        receivedBy: currentUser?.name || 'Plant QC & Stock Controller',
-        notes: `Finalized & received from Executive Production Cost Sheet (Order: ${order.orderNumber}, Batch: ${order.batchNumber})`,
-        qcStatus: 'QC Passed & Stamped',
-        rackLocation: 'Bay A / Finished Goods Bay 01',
-      });
-
-      if (!res.success) {
-        setReceiveError(res.error || 'Failed to receive Finished Goods');
-        setIsReceiving(false);
-        return;
-      }
-
-      if (onReceiveFinishedGoods) {
-        try {
-          onReceiveFinishedGoods(order, costRecord);
-        } catch (e) {
-          console.warn('onReceiveFinishedGoods notice:', e);
-        }
-      }
-
-      if (refreshProductionOrders) await refreshProductionOrders();
-      if (refreshFinishedGoodsReceipts) await refreshFinishedGoodsReceipts();
-
-      setReceiveSuccess(true);
-    } catch (err: any) {
-      console.error('Error during FG receive finalization:', err);
-      setReceiveError(err.message || 'An error occurred while receiving finished goods');
-    } finally {
-      setIsReceiving(false);
     }
   };
 
@@ -966,22 +894,6 @@ export const ProductionCostSheetModal: React.FC<ProductionCostSheetModalProps> =
           </div>
         )}
 
-        {receiveError && (
-          <div className="p-3 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 rounded-xl flex items-center justify-between gap-3 text-rose-800 dark:text-rose-200">
-            <div className="flex items-center gap-2">
-              <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
-              <span className="font-medium">{receiveError}</span>
-            </div>
-            <button
-              type="button"
-              onClick={() => setReceiveError(null)}
-              className="text-rose-500 hover:text-rose-700 p-1 cursor-pointer"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        )}
-
         {/* Footer Actions */}
         <div className="flex flex-col sm:flex-row items-center justify-between pt-4 border-t border-slate-200 dark:border-slate-800 gap-3">
           <div className="text-xs text-slate-500">
@@ -1010,7 +922,7 @@ export const ProductionCostSheetModal: React.FC<ProductionCostSheetModalProps> =
                 <span>{saveSuccess ? 'Saved to Database!' : isSaving ? 'Saving to Database...' : 'Save Cost Sheet to Database'}</span>
               </button>
             )}
-            {isAlreadyReceived ? (
+            {isAlreadyReceived && (
               <span
                 className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 font-bold text-xs flex items-center gap-1.5 border border-slate-200 dark:border-slate-700 select-none cursor-not-allowed shadow-none"
                 title="Finished Goods have already been received into warehouse inventory for this production order. Duplicate receiving is locked."
@@ -1018,124 +930,10 @@ export const ProductionCostSheetModal: React.FC<ProductionCostSheetModalProps> =
                 <CheckCircle2 className="w-4 h-4 text-emerald-500" />
                 <span>FG Received into Inventory ({currentOrder.receivedFgQty || totalOrderQty} Units) &bull; Locked</span>
               </span>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setShowReceiveConfirmModal(true)}
-                disabled={isReceiving}
-                className={`px-5 py-2 rounded-xl text-white font-bold text-xs flex items-center gap-2 shadow-sm transition cursor-pointer ${
-                  isReceiving ? 'bg-indigo-400 cursor-wait' : 'bg-indigo-600 hover:bg-indigo-700 active:scale-95'
-                }`}
-                title="Finalize production costing and receive finished goods into warehouse inventory (requires confirmation)"
-              >
-                {isReceiving ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Receiving to FG Inventory...</span>
-                  </>
-                ) : (
-                  <>
-                    <CheckCircle2 className="w-4 h-4" />
-                    <span>Finalize Receive into FG Inventory</span>
-                  </>
-                )}
-              </button>
             )}
           </div>
         </div>
       </div>
-
-      {/* Confirmation Dialog for Finalize Receive into FG Inventory */}
-      {showReceiveConfirmModal && (
-        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-xs animate-in fade-in duration-150">
-          <div className="relative w-full max-w-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden p-6 space-y-4">
-            <div className="flex items-start gap-3.5">
-              <div className="p-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-800 shrink-0">
-                <AlertTriangle className="w-6 h-6" />
-              </div>
-              <div className="space-y-1">
-                <h3 className="text-base font-bold text-slate-900 dark:text-white">
-                  Confirm Finalize &amp; Receive into FG Inventory
-                </h3>
-                <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-                  Are you sure you want to finalize this production cost sheet and receive these Finished Goods into FG Inventory?
-                </p>
-              </div>
-            </div>
-
-            {/* Order & Batch Summary Details */}
-            <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/50 p-3.5 space-y-2 text-xs">
-              <div className="flex justify-between items-center py-1 border-b border-slate-200/60 dark:border-slate-700/60">
-                <span className="text-slate-500 dark:text-slate-400">Production Order:</span>
-                <span className="font-mono font-bold text-slate-800 dark:text-slate-200">{order.orderNumber || order.id}</span>
-              </div>
-              <div className="flex justify-between items-center py-1 border-b border-slate-200/60 dark:border-slate-700/60">
-                <span className="text-slate-500 dark:text-slate-400">Batch Number:</span>
-                <span className="font-mono font-bold text-indigo-600 dark:text-indigo-400">{detailedRecord.batchNumber || order.batchNumber}</span>
-              </div>
-              <div className="flex justify-between items-center py-1 border-b border-slate-200/60 dark:border-slate-700/60">
-                <span className="text-slate-500 dark:text-slate-400">Product:</span>
-                <span className="font-semibold text-slate-900 dark:text-white text-right truncate max-w-[240px]">{detailedRecord.productName || order.productName}</span>
-              </div>
-              <div className="flex justify-between items-center py-1 border-b border-slate-200/60 dark:border-slate-700/60">
-                <span className="text-slate-500 dark:text-slate-400">Quantity to Receive:</span>
-                <span className="font-bold text-emerald-600 dark:text-emerald-400">
-                  {Number(detailedRecord.goodFinishedQty || currentOrder.completedQty || currentOrder.plannedQty || 1)} Units
-                </span>
-              </div>
-              <div className="flex justify-between items-center py-1 border-b border-slate-200/60 dark:border-slate-700/60">
-                <span className="text-slate-500 dark:text-slate-400">Calculated Unit Cost:</span>
-                <span className="font-mono font-bold text-slate-900 dark:text-white">{formatCurrency(Number(detailedRecord.actualUnitProductionCost || 0))}</span>
-              </div>
-              <div className="flex justify-between items-center py-1 border-b border-slate-200/60 dark:border-slate-700/60">
-                <span className="text-slate-500 dark:text-slate-400">Total Valuation:</span>
-                <span className="font-mono font-bold text-slate-900 dark:text-white">{formatCurrency(Number(detailedRecord.totalManufacturingCost || 0))}</span>
-              </div>
-              <div className="flex justify-between items-center py-1">
-                <span className="text-slate-500 dark:text-slate-400">Receiving Warehouse:</span>
-                <span className="font-semibold text-slate-800 dark:text-slate-200">{order.warehouseName || 'Kushtia Manufacturing Plant'}</span>
-              </div>
-            </div>
-
-            <div className="p-2.5 rounded-lg bg-amber-50/80 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-[11px] text-amber-800 dark:text-amber-300">
-              Note: Once successfully finalized, this order will be permanently locked against duplicate receiving and will not automatically receive finished goods again.
-            </div>
-
-            {/* Modal Actions */}
-            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-200 dark:border-slate-800">
-              <button
-                type="button"
-                onClick={() => setShowReceiveConfirmModal(false)}
-                disabled={isReceiving}
-                className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold text-xs transition cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={async () => {
-                  setShowReceiveConfirmModal(false);
-                  await handleDirectReceive();
-                }}
-                disabled={isReceiving}
-                className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs flex items-center gap-2 shadow-sm transition cursor-pointer"
-              >
-                {isReceiving ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Receiving to FG Inventory...</span>
-                  </>
-                ) : (
-                  <>
-                    <CheckCircle2 className="w-4 h-4" />
-                    <span>Confirm &amp; Receive</span>
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };
