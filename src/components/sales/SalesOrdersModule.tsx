@@ -32,6 +32,11 @@ import {
 } from 'lucide-react';
 import { useERP } from '../../context/ERPContext.tsx';
 import { SalesOrder, SalesOrderItem, CashBookEntry, getCustomerProductPricing } from '../../types/erp.ts';
+import {
+  calculateProductWarehouseStock,
+  calculateTotalProductStock,
+  InventoryStockLedgerSources,
+} from '../../lib/inventoryStockCalc.ts';
 
 interface QuickOrderItem {
   id: string;
@@ -67,6 +72,12 @@ export const SalesOrdersModule: React.FC<SalesOrdersModuleProps> = ({ onNavigate
     distributors,
     products,
     warehouses,
+    openingStockRecords,
+    cidStockReceipts,
+    stockTransfers,
+    stockIssueRecords,
+    primaryReturnRecords,
+    stockAdjustmentRecords,
     createSalesOrder,
     addCustomer,
   } = useERP();
@@ -183,6 +194,32 @@ export const SalesOrdersModule: React.FC<SalesOrdersModuleProps> = ({ onNavigate
     return allAvailableBuyers.find((b) => b.id === selectedBuyerId) || allAvailableBuyers[0];
   }, [allAvailableBuyers, selectedBuyerId]);
 
+  // Live finished goods stock ledger sources matching Inventory Stock module
+  const stockSources = useMemo<InventoryStockLedgerSources>(
+    () => ({
+      products,
+      warehouses,
+      openingStockRecords,
+      cidStockReceipts,
+      stockTransfers,
+      stockIssueRecords,
+      salesOrders,
+      primaryReturnRecords,
+      stockAdjustmentRecords,
+    }),
+    [
+      products,
+      warehouses,
+      openingStockRecords,
+      cidStockReceipts,
+      stockTransfers,
+      stockIssueRecords,
+      salesOrders,
+      primaryReturnRecords,
+      stockAdjustmentRecords,
+    ]
+  );
+
   // Filtered product suggestions
   const filteredProducts = useMemo(() => {
     if (!productSearchInput.trim()) return [];
@@ -191,6 +228,15 @@ export const SalesOrdersModule: React.FC<SalesOrdersModuleProps> = ({ onNavigate
       .filter((p) => p.name.toLowerCase().includes(query) || (p.code && p.code.toLowerCase().includes(query)))
       .slice(0, 6);
   }, [products, productSearchInput]);
+
+  // Live stock quantity per product across all warehouses for dropdown display
+  const dropdownProductStockMap = useMemo(() => {
+    const map: Record<string, number> = {};
+    filteredProducts.forEach((p) => {
+      map[String(p.id)] = calculateTotalProductStock(p.id, stockSources);
+    });
+    return map;
+  }, [filteredProducts, stockSources]);
 
   // Subtotal & Net calculation
   const subTotal = useMemo(() => {
@@ -252,11 +298,19 @@ export const SalesOrdersModule: React.FC<SalesOrdersModuleProps> = ({ onNavigate
   const updateItemWarehouse = (id: string, whName: string) => {
     const foundWh = allAvailableWarehouses.find((w) => w.name === whName);
     setQuickItems((prev) =>
-      prev.map((item) =>
-        item.id === id
-          ? { ...item, warehouseName: whName, warehouseId: foundWh?.id || item.warehouseId }
-          : item
-      )
+      prev.map((item) => {
+        if (item.id !== id) return item;
+        const targetWhId = foundWh?.id || item.warehouseId;
+        const whStockPcs = calculateProductWarehouseStock(targetWhId, item.productId, stockSources);
+        const pcsPerCtn = item.pcsPerCtn > 0 ? item.pcsPerCtn : 10;
+        return {
+          ...item,
+          warehouseName: whName,
+          warehouseId: targetWhId,
+          stockCtn: Math.floor(whStockPcs / pcsPerCtn),
+          stockPcs: whStockPcs,
+        };
+      })
     );
   };
 
@@ -265,20 +319,23 @@ export const SalesOrdersModule: React.FC<SalesOrdersModuleProps> = ({ onNavigate
   };
 
   const handleSelectProduct = (prod: any) => {
-    const pcsPerCtn = 20;
+    const pcsPerCtn = prod.pcsPerCarton && prod.pcsPerCarton > 0 ? Number(prod.pcsPerCarton) : 10;
     const unitPrice = prod.distributorPriceBDT || prod.retailPriceBDT || 1500;
     const ctnPrice = unitPrice * pcsPerCtn;
+    const targetWhId = allAvailableWarehouses[0]?.id || warehouses[0]?.id || 'wh-1';
+    const targetWhName = allAvailableWarehouses[0]?.name || warehouses[0]?.name || 'Main Warehouse';
+    const whStockPcs = calculateProductWarehouseStock(targetWhId, prod.id, stockSources);
 
     const newItem: QuickOrderItem = {
       id: `qi-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      warehouseId: allAvailableWarehouses[0]?.id || warehouses[0]?.id || 'wh-1',
-      warehouseName: allAvailableWarehouses[0]?.name || warehouses[0]?.name || 'Main Warehouse',
+      warehouseId: targetWhId,
+      warehouseName: targetWhName,
       productId: prod.id,
       productName: prod.name,
       batchNumber: prod.code ? `BT-${prod.code}` : 'BT-202610-001',
       pcsPerCtn,
-      stockCtn: Math.max(1, Math.floor((prod.stockQuantity || 200) / pcsPerCtn)),
-      stockPcs: prod.stockQuantity || 200,
+      stockCtn: Math.floor(whStockPcs / pcsPerCtn),
+      stockPcs: whStockPcs,
       unitPrice,
       ctnPrice,
       qtyCtn: 1,
@@ -618,21 +675,26 @@ export const SalesOrdersModule: React.FC<SalesOrdersModuleProps> = ({ onNavigate
                 {/* Autocomplete Dropdown */}
                 {showProductDropdown && filteredProducts.length > 0 && (
                   <div className="absolute left-0 right-0 top-full mt-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-lg z-30 overflow-hidden divide-y divide-slate-100 dark:divide-slate-700 max-h-60 overflow-y-auto">
-                    {filteredProducts.map((p) => (
-                      <div
-                        key={p.id}
-                        onClick={() => handleSelectProduct(p)}
-                        className="p-2.5 hover:bg-blue-50 dark:hover:bg-slate-700 cursor-pointer text-xs flex items-center justify-between transition-colors"
-                      >
-                        <div>
-                          <div className="font-semibold text-slate-900 dark:text-white">{p.name}</div>
-                          <div className="text-[10px] text-slate-400">{p.code} • Stock: {p.stockQuantity || 200} units</div>
+                    {filteredProducts.map((p) => {
+                      const currentStockUnits = dropdownProductStockMap[String(p.id)] ?? 0;
+                      return (
+                        <div
+                          key={p.id}
+                          onClick={() => handleSelectProduct(p)}
+                          className="p-2.5 hover:bg-blue-50 dark:hover:bg-slate-700 cursor-pointer text-xs flex items-center justify-between transition-colors"
+                        >
+                          <div>
+                            <div className="font-semibold text-slate-900 dark:text-white">{p.name}</div>
+                            <div className="text-[10px] text-slate-400">
+                              {p.code} • Stock: {currentStockUnits.toLocaleString()} units
+                            </div>
+                          </div>
+                          <span className="font-bold text-blue-600 dark:text-blue-400 font-mono">
+                            ৳{(p.distributorPriceBDT || p.retailPriceBDT || 1500).toLocaleString()}
+                          </span>
                         </div>
-                        <span className="font-bold text-blue-600 dark:text-blue-400 font-mono">
-                          ৳{(p.distributorPriceBDT || p.retailPriceBDT || 1500).toLocaleString()}
-                        </span>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
