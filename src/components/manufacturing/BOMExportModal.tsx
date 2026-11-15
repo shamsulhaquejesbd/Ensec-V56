@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { Product, BOMDefinition, BOMItem, BOMRevision, RawMaterial } from '../../types/erp.ts';
 import { useERP } from '../../context/ERPContext.tsx';
+import { canViewBomExport } from '../../types/pagePermissions.ts';
 
 interface BOMExportModalProps {
   initialProductId?: string;
@@ -34,7 +35,8 @@ export const BOMExportModal: React.FC<BOMExportModalProps> = ({
   initialVersion,
   onClose,
 }) => {
-  const { products, boms, rawMaterials, formatCurrency } = useERP();
+  const { currentUser, products, boms, rawMaterials, formatCurrency } = useERP();
+  const canExportBOM = canViewBomExport(currentUser);
 
   // Mode: single product or all products
   const [exportMode, setExportMode] = useState<'single' | 'all'>(
@@ -418,6 +420,7 @@ export const BOMExportModal: React.FC<BOMExportModalProps> = ({
 
   // Download CSV trigger
   const handleDownloadCSV = () => {
+    if (!canExportBOM) return;
     const csvData = generateCSV();
     const blob = new Blob(['\uFEFF' + csvData], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -444,6 +447,7 @@ export const BOMExportModal: React.FC<BOMExportModalProps> = ({
 
   // Download JSON trigger
   const handleDownloadJSON = () => {
+    if (!canExportBOM) return;
     const jsonOutput = {
       exportMetadata: {
         application: 'Ensec ERP & Distribution Management Platform',
@@ -526,6 +530,7 @@ export const BOMExportModal: React.FC<BOMExportModalProps> = ({
 
   // Copy Tab-Separated Values (TSV) for direct paste into Excel / Google Sheets
   const handleCopyToClipboard = () => {
+    if (!canExportBOM) return;
     const csvText = generateCSV();
     // Convert CSV commas to tabs for clean Excel/Sheets clipboard paste
     const tsvText = csvText
@@ -547,6 +552,7 @@ export const BOMExportModal: React.FC<BOMExportModalProps> = ({
 
   // Printable / PDF Specification Sheet
   const handlePrintSpecificationSheet = () => {
+    if (!canExportBOM) return;
     const printWindow = window.open('', '_blank');
     if (!printWindow) {
       alert('Pop-up was blocked. Please allow pop-ups to print the BOM Specification Sheet.');
@@ -874,6 +880,10 @@ export const BOMExportModal: React.FC<BOMExportModalProps> = ({
     printWindow.document.write(printHTML);
     printWindow.document.close();
   };
+
+  if (!canExportBOM) {
+    return null;
+  }
 
   return (
     <div className="fixed inset-0 z-60 flex items-center justify-center p-3 sm:p-5 bg-black/65 backdrop-blur-xs overflow-y-auto">

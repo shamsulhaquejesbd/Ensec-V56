@@ -7,6 +7,7 @@ import {
   Loader2, Database
 } from 'lucide-react';
 import { Product, BOMDefinition, BOMItem, BOMRevision } from '../../types/erp';
+import { canViewBomExport, canViewBomUpload } from '../../types/pagePermissions';
 import { BOMExportModal } from './BOMExportModal';
 
 interface BOMManagementModalProps {
@@ -64,13 +65,17 @@ export const BOMManagementModal: React.FC<BOMManagementModalProps> = ({
     return null;
   }
 
-  const { 
-    rawMaterials, 
-    boms, 
-    updateBOMDefinition, 
+  const {
+    currentUser,
+    rawMaterials,
+    boms,
+    updateBOMDefinition,
     addRawMaterial,
-    formatCurrency 
+    formatCurrency
   } = useERP();
+
+  const canExportBOM = canViewBomExport(currentUser);
+  const canUploadBOM = canViewBomUpload(currentUser);
 
   // Find existing BOM for this product or initialize
   const existingBOM = boms.find(
@@ -122,7 +127,7 @@ export const BOMManagementModal: React.FC<BOMManagementModalProps> = ({
   const [itemToDeleteIndex, setItemToDeleteIndex] = useState<number | null>(null);
 
   // Raw Material Upload State
-  const [showUploadModal, setShowUploadModal] = useState(initialOpenUpload);
+  const [showUploadModal, setShowUploadModal] = useState(Boolean(initialOpenUpload && canUploadBOM));
   const [uploadFileName, setUploadFileName] = useState('');
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadMode, setUploadMode] = useState<'replace' | 'append'>('replace');
@@ -149,6 +154,7 @@ export const BOMManagementModal: React.FC<BOMManagementModalProps> = ({
   };
 
   const handleDownloadTemplate = () => {
+    if (!canUploadBOM) return;
     const headers = ['Material Code', 'Material Name', 'Required Qty', 'UOM', 'Wastage %', 'Notes'];
     const sampleRows = [
       ['RM-CELL-001', 'LiFePO4 3.2V 105Ah Prismatic Cell', '16', 'PCS', '0.5', 'Grade-A cell matched'],
@@ -310,7 +316,7 @@ RM-CAB-001,Silicone 8AWG Flexible High-Temp Wire Cable,3.5,MTR,1.0,Flame retarda
   };
 
   const handleApplyUploadedMaterials = async () => {
-    if (draftRows.length === 0) return;
+    if (!canUploadBOM || draftRows.length === 0) return;
     setIsProcessingUpload(true);
 
     try {
@@ -522,18 +528,20 @@ RM-CAB-001,Silicone 8AWG Flexible High-Temp Wire Cable,3.5,MTR,1.0,Flame retarda
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                setExportTargetVersion(version || 'active');
-                setShowExportModal(true);
-              }}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-semibold hover:bg-slate-50 dark:hover:bg-slate-750 transition shadow-2xs cursor-pointer text-xs"
-              title="Export this product's BOM specification and revisions"
-            >
-              <Download className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-              <span>Export BOM</span>
-            </button>
+            {canExportBOM && (
+              <button
+                type="button"
+                onClick={() => {
+                  setExportTargetVersion(version || 'active');
+                  setShowExportModal(true);
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-semibold hover:bg-slate-50 dark:hover:bg-slate-750 transition shadow-2xs cursor-pointer text-xs"
+                title="Export this product's BOM specification and revisions"
+              >
+                <Download className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                <span>Export BOM</span>
+              </button>
+            )}
             <button
               onClick={onClose}
               className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
@@ -674,15 +682,17 @@ RM-CAB-001,Silicone 8AWG Flexible High-Temp Wire Cable,3.5,MTR,1.0,Flame retarda
                     </button>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() => setShowUploadModal(true)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 border border-emerald-300 dark:border-emerald-800 transition cursor-pointer shadow-xs"
-                    title="Upload raw material components from CSV or Excel file"
-                  >
-                    <Upload className="w-3.5 h-3.5" />
-                    <span>Upload Raw Materials</span>
-                  </button>
+                  {canUploadBOM && (
+                    <button
+                      type="button"
+                      onClick={() => setShowUploadModal(true)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 border border-emerald-300 dark:border-emerald-800 transition cursor-pointer shadow-xs"
+                      title="Upload raw material components from CSV or Excel file"
+                    >
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>Upload Raw Materials</span>
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={handleAddItem}
@@ -882,18 +892,20 @@ RM-CAB-001,Silicone 8AWG Flexible High-Temp Wire Cable,3.5,MTR,1.0,Flame retarda
                           <Calendar className="w-3 h-3" />
                           {rev.effectiveDate || rev.revisionDate} {rev.createdBy ? `(Saved by ${rev.createdBy})` : ''}
                         </span>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setExportTargetVersion(rev.version);
-                            setShowExportModal(true);
-                          }}
-                          className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-950 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 text-[10px] font-bold transition cursor-pointer"
-                          title={`Export revision v${rev.version}`}
-                        >
-                          <Download className="w-3 h-3" />
-                          <span>Export v{rev.version}</span>
-                        </button>
+                        {canExportBOM && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setExportTargetVersion(rev.version);
+                              setShowExportModal(true);
+                            }}
+                            className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-950 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 text-[10px] font-bold transition cursor-pointer"
+                            title={`Export revision v${rev.version}`}
+                          >
+                            <Download className="w-3 h-3" />
+                            <span>Export v{rev.version}</span>
+                          </button>
+                        )}
                       </div>
                     </div>
 
@@ -971,7 +983,7 @@ RM-CAB-001,Silicone 8AWG Flexible High-Temp Wire Cable,3.5,MTR,1.0,Flame retarda
         )}
 
         {/* RAW MATERIAL UPLOAD MODAL */}
-        {showUploadModal && (
+        {showUploadModal && canUploadBOM && (
           <div className="fixed inset-0 z-65 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs overflow-y-auto">
             <div className="relative w-full max-w-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl p-6 space-y-4 text-xs max-h-[92vh] overflow-y-auto">
               {/* Header */}
@@ -1325,7 +1337,7 @@ RM-CAB-001,Silicone 8AWG Flexible High-Temp Wire Cable,3.5,MTR,1.0,Flame retarda
         )}
 
         {/* BOM Version Wise Export Modal */}
-        {showExportModal && (
+        {showExportModal && canExportBOM && (
           <BOMExportModal
             initialProductId={product.id}
             initialVersion={exportTargetVersion}

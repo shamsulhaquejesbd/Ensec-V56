@@ -976,35 +976,37 @@ export const PageWisePermissionsEditor: React.FC<PageWisePermissionsEditorProps>
                                         <span className="inline-flex items-center justify-center w-6 h-6 rounded-lg bg-amber-100 dark:bg-amber-900/60 text-amber-700 dark:text-amber-300">
                                           <Sliders className="w-3.5 h-3.5" />
                                         </span>
-                                        <div>
-                                          <h6 className="text-xs font-extrabold text-slate-900 dark:text-white tracking-tight">
-                                            {subTitle}
-                                          </h6>
-                                          <p className="text-[10px] text-slate-500 dark:text-slate-400">
-                                            Independent ON/OFF cost visibility &amp; Cost Sheet controls. Off options are enforced across UI, URLs, and API responses.
-                                          </p>
+                                          <div>
+                                            <h6 className="text-xs font-extrabold text-slate-900 dark:text-white tracking-tight">
+                                              {subTitle}
+                                            </h6>
+                                            <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                                              {subTitle === 'Excel Export and Upload BOM Visibility Permissions'
+                                                ? 'Independent ON/OFF controls for Export BOM and Upload BOM visibility across BOM Master and Configure BOM Master & Versioning.'
+                                                : 'Independent ON/OFF cost visibility & Cost Sheet controls. Off options are enforced across UI, URLs, and API responses.'}
+                                            </p>
+                                          </div>
                                         </div>
+                                        <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/50 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800 self-start sm:self-center">
+                                          {actionsInSub.filter((a) => pagePerms[a.key]).length} / {actionsInSub.length} Enabled
+                                        </span>
                                       </div>
-                                      <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/50 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800 self-start sm:self-center">
-                                        {actionsInSub.filter((a) => pagePerms[a.key]).length} / {actionsInSub.length} Enabled
-                                      </span>
-                                    </div>
 
-                                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                                      {groups.map((grp) => {
-                                        const grpActions = actionsInSub.filter(
-                                          (a) => (a.group || 'General') === grp
-                                        );
-                                        return (
-                                          <div
-                                            key={grp}
-                                            className="p-3 rounded-xl bg-white dark:bg-slate-900/90 border border-slate-200 dark:border-slate-800 space-y-2"
-                                          >
-                                            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 pb-1 border-b border-slate-100 dark:border-slate-800">
-                                              {grp}
-                                            </div>
-                                            <div className="space-y-2">
-                                              {grpActions.map((act) => {
+                                      <div className={`grid grid-cols-1 ${groups.length > 1 ? 'lg:grid-cols-2' : ''} gap-3`}>
+                                        {groups.map((grp) => {
+                                          const grpActions = actionsInSub.filter(
+                                            (a) => (a.group || 'General') === grp
+                                          );
+                                          return (
+                                            <div
+                                              key={grp}
+                                              className="p-3 rounded-xl bg-white dark:bg-slate-900/90 border border-slate-200 dark:border-slate-800 space-y-2"
+                                            >
+                                              <div className="text-[11px] font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 pb-1 border-b border-slate-100 dark:border-slate-800">
+                                                {grp}
+                                              </div>
+                                              <div className={groups.length === 1 ? 'grid grid-cols-1 sm:grid-cols-2 gap-2' : 'space-y-2'}>
+                                                {grpActions.map((act) => {
                                                 const isGranted = Boolean(pagePerms[act.key]);
                                                 return (
                                                   <div

@@ -389,6 +389,21 @@ export const ERP_PAGE_PERMISSIONS_REGISTRY: ERPModuleCategory[] = [
             subsection: 'Cost Visibility & Cost Sheet Permissions',
             group: 'B. Issue Raw Materials',
           },
+          // Excel Export and Upload BOM Visibility Permissions
+          {
+            key: 'view_bom_export',
+            label: 'View BOM Export',
+            description: 'Show Export BOM buttons and allow exporting BOM spreadsheets & specifications in BOM Master and Configure BOM Master & Versioning',
+            subsection: 'Excel Export and Upload BOM Visibility Permissions',
+            group: 'BOM Master & Versioning',
+          },
+          {
+            key: 'view_bom_upload',
+            label: 'View BOM Upload',
+            description: 'Show Upload BOM and Upload Raw Materials buttons and allow importing BOM files in BOM Master and Configure BOM Master & Versioning',
+            subsection: 'Excel Export and Upload BOM Visibility Permissions',
+            group: 'BOM Master & Versioning',
+          },
         ],
       },
       {
@@ -1172,6 +1187,7 @@ export const PERMISSION_TEMPLATES: PermissionTemplate[] = [
             act.key === 'view_batch_rate' ||
             act.key === 'view_total_cost' ||
             act.key === 'view_total_material_issue_value' ||
+            act.key === 'view_bom_export' ||
             act.key === 'view_valuation' ||
             act.key === 'view_revenue' ||
             act.key === 'export'
@@ -1438,6 +1454,18 @@ export function canViewTotalMaterialIssueValue(user: any): boolean {
   if (!user) return false;
   if (user.role === 'Super Admin') return true;
   return hasPageAction(user, 'manufacturing', 'view_total_material_issue_value');
+}
+
+export function canViewBomExport(user: any): boolean {
+  if (!user) return false;
+  if (user.role === 'Super Admin') return true;
+  return hasPageAction(user, 'manufacturing', 'view_bom_export');
+}
+
+export function canViewBomUpload(user: any): boolean {
+  if (!user) return false;
+  if (user.role === 'Super Admin') return true;
+  return hasPageAction(user, 'manufacturing', 'view_bom_upload');
 }
 
 export function canViewManufacturingCostDashboard(user: any): boolean {

@@ -47,6 +47,8 @@ import {
   canApproveFactoryExpense,
   canAllocateManufacturingOverhead,
   canRollbackCostAllocation,
+  canViewBomExport,
+  canViewBomUpload,
 } from '../../types/pagePermissions.ts';
 
 export type ManufacturingTab = 'orders' | 'cost-dashboard' | 'expenses' | 'allocations' | 'bom';
@@ -92,7 +94,13 @@ export const ManufacturingModule: React.FC<ManufacturingModuleProps> = ({ initia
     hasPageAction(currentUser, 'manufacturing', 'create_batch') ||
     !currentUser?.permissions?.pagePermissions?.manufacturing
   );
-  const canViewBomTab = canViewBomOrders || hasPageAction(currentUser, 'manufacturing', 'update_bom');
+  const canViewBomExportBtn = canViewBomExport(currentUser);
+  const canViewBomUploadBtn = canViewBomUpload(currentUser);
+  const canViewBomTab =
+    canViewBomOrders ||
+    hasPageAction(currentUser, 'manufacturing', 'update_bom') ||
+    canViewBomExportBtn ||
+    canViewBomUploadBtn;
   const canViewCostDashboardTab = canViewManufacturingCostDashboard(currentUser);
   const canViewExpensesTab =
     canViewCostDashboardTab || canPostFactoryExpense(currentUser) || canApproveFactoryExpense(currentUser);
@@ -926,15 +934,17 @@ export const ManufacturingModule: React.FC<ManufacturingModuleProps> = ({ initia
                 <Plus className="w-4 h-4" />
                 <span>Create New BOM</span>
               </button>
-              <button
-                type="button"
-                onClick={() => setExportBOMState({ isOpen: true })}
-                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white transition shadow-sm cursor-pointer"
-                title="Export Bill of Materials (BOM) in CSV (Excel), printable PDF spec sheet, or JSON"
-              >
-                <Download className="w-4 h-4" />
-                <span>Export BOM</span>
-              </button>
+              {canViewBomExportBtn && (
+                <button
+                  type="button"
+                  onClick={() => setExportBOMState({ isOpen: true })}
+                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white transition shadow-sm cursor-pointer"
+                  title="Export Bill of Materials (BOM) in CSV (Excel), printable PDF spec sheet, or JSON"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>Export BOM</span>
+                </button>
+              )}
             </div>
           </div>
 
@@ -1003,25 +1013,29 @@ export const ManufacturingModule: React.FC<ManufacturingModuleProps> = ({ initia
 
                   {/* Actions */}
                   <div className="flex items-center gap-1.5 pt-2 border-t border-slate-100 dark:border-slate-800">
-                    <button
-                      type="button"
-                      onClick={() => setExportBOMState({ isOpen: true, productId: prod.id, version: versionStr })}
-                      className="p-2 rounded-xl text-xs font-semibold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-emerald-50 hover:text-emerald-700 dark:hover:bg-emerald-950/60 dark:hover:text-emerald-300 border border-slate-200 dark:border-slate-700 transition cursor-pointer"
-                      title={`Export BOM specification for ${prod.name}`}
-                    >
-                      <Download className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                    </button>
-                    <button
-                      onClick={() => {
-                        setOpenUploadDirectly(true);
-                        startEditBOM(prod);
-                      }}
-                      className="flex-1 flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-xl text-xs font-semibold bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-950 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 transition cursor-pointer"
-                      title="Upload raw materials to BOM"
-                    >
-                      <Upload className="w-3.5 h-3.5" />
-                      <span>Upload BOM</span>
-                    </button>
+                    {canViewBomExportBtn && (
+                      <button
+                        type="button"
+                        onClick={() => setExportBOMState({ isOpen: true, productId: prod.id, version: versionStr })}
+                        className="p-2 rounded-xl text-xs font-semibold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-emerald-50 hover:text-emerald-700 dark:hover:bg-emerald-950/60 dark:hover:text-emerald-300 border border-slate-200 dark:border-slate-700 transition cursor-pointer"
+                        title={`Export BOM specification for ${prod.name}`}
+                      >
+                        <Download className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                      </button>
+                    )}
+                    {canViewBomUploadBtn && (
+                      <button
+                        onClick={() => {
+                          setOpenUploadDirectly(true);
+                          startEditBOM(prod);
+                        }}
+                        className="flex-1 flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-xl text-xs font-semibold bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-950 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 transition cursor-pointer"
+                        title="Upload raw materials to BOM"
+                      >
+                        <Upload className="w-3.5 h-3.5" />
+                        <span>Upload BOM</span>
+                      </button>
+                    )}
                     {activeItems.length === 0 ? (
                       <button
                         onClick={() => {
@@ -1269,7 +1283,7 @@ export const ManufacturingModule: React.FC<ManufacturingModuleProps> = ({ initia
         }}
         preSelectedProductId={createBOMPreSelectedId}
         onBOMCreated={(prod, openUpload) => {
-          setOpenUploadDirectly(openUpload || false);
+          setOpenUploadDirectly(Boolean(openUpload) && canViewBomUploadBtn);
           startEditBOM(prod);
         }}
       />
@@ -1278,7 +1292,7 @@ export const ManufacturingModule: React.FC<ManufacturingModuleProps> = ({ initia
       {editingBOMProduct && (
         <BOMManagementModal
           product={editingBOMProduct}
-          initialOpenUpload={openUploadDirectly}
+          initialOpenUpload={openUploadDirectly && canViewBomUploadBtn}
           onClose={() => {
             setEditingBOMProduct(null);
             setOpenUploadDirectly(false);
@@ -1287,7 +1301,7 @@ export const ManufacturingModule: React.FC<ManufacturingModuleProps> = ({ initia
       )}
 
       {/* Modal: Product and BOM Version-Wise Export */}
-      {exportBOMState.isOpen && (
+      {exportBOMState.isOpen && canViewBomExportBtn && (
         <BOMExportModal
           initialProductId={exportBOMState.productId}
           initialVersion={exportBOMState.version}

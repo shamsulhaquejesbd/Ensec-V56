@@ -284,3 +284,43 @@ export function getManufacturingAuthHeaders(user: any): Record<string, string> {
   if (user.email) headers['x-user-email'] = String(user.email);
   return headers;
 }
+
+export const BOM_VISIBILITY_PERMISSION_KEYS = {
+  VIEW_BOM_EXPORT: 'view_bom_export',
+  VIEW_BOM_UPLOAD: 'view_bom_upload',
+} as const;
+
+export interface BomVisibilityPermissions {
+  viewBomExport: boolean;
+  viewBomUpload: boolean;
+}
+
+export function resolveBomVisibilityPermissions(user: any): BomVisibilityPermissions {
+  if (!user) {
+    return { viewBomExport: false, viewBomUpload: false };
+  }
+  if (user.role === 'Super Admin') {
+    return { viewBomExport: true, viewBomUpload: true };
+  }
+
+  let rawPermissions = user.permissions;
+  if (typeof rawPermissions === 'string') {
+    try {
+      rawPermissions = JSON.parse(rawPermissions);
+    } catch {
+      rawPermissions = null;
+    }
+  }
+
+  const pagePerms = rawPermissions?.pagePermissions;
+  const mfgPerms =
+    pagePerms && typeof pagePerms === 'object'
+      ? pagePerms.manufacturing || {}
+      : {};
+
+  return {
+    viewBomExport: Boolean(mfgPerms[BOM_VISIBILITY_PERMISSION_KEYS.VIEW_BOM_EXPORT]),
+    viewBomUpload: Boolean(mfgPerms[BOM_VISIBILITY_PERMISSION_KEYS.VIEW_BOM_UPLOAD]),
+  };
+}
+
