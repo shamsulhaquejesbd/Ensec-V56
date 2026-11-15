@@ -210,6 +210,7 @@ export const FieldForcePage: React.FC = () => {
   const [formFieldType, setFormFieldType] = useState('Order Booker');
   const [formActionType, setFormActionType] = useState('Primary Order Booking');
   const [formTadaApproverId, setFormTadaApproverId] = useState<string>('');
+  const [formLinkedUserId, setFormLinkedUserId] = useState<string>('');
 
   // Overtime Policy & Configuration Form State
   const [formIsOvertimeEligible, setFormIsOvertimeEligible] = useState<boolean>(true);
@@ -423,6 +424,7 @@ export const FieldForcePage: React.FC = () => {
     setFormShiftStartTime(DEFAULT_SHIFT_START_TIME);
     setFormShiftEndTime(DEFAULT_SHIFT_END_TIME);
     setFormGracePeriodMinutes(DEFAULT_GRACE_PERIOD_MINUTES);
+    setFormLinkedUserId('');
     setGpsCaptureStatus('');
   };
 
@@ -511,6 +513,7 @@ export const FieldForcePage: React.FC = () => {
     setFormShiftStartTime(rep.shiftStartTime || DEFAULT_SHIFT_START_TIME);
     setFormShiftEndTime(rep.shiftEndTime || DEFAULT_SHIFT_END_TIME);
     setFormGracePeriodMinutes(rep.gracePeriodMinutes ?? DEFAULT_GRACE_PERIOD_MINUTES);
+    setFormLinkedUserId(rep.userId || '');
     setGpsCaptureStatus('');
   };
 
@@ -574,6 +577,7 @@ export const FieldForcePage: React.FC = () => {
     const reportingMgr = parentCode ? cleanFieldForceReps.find((r) => r.code === parentCode) : undefined;
 
     addFieldForceRep({
+      userId: formLinkedUserId.trim() || undefined,
       code: formCode.trim().toUpperCase(),
       name: formName.trim(),
       nativeName: formNativeName.trim() || undefined,
@@ -714,6 +718,7 @@ export const FieldForcePage: React.FC = () => {
     }
 
     updateFieldForceRep(editingRep.id, {
+      userId: formLinkedUserId.trim() || undefined,
       code: formCode.trim().toUpperCase(),
       name: formName.trim(),
       nativeName: formNativeName.trim() || undefined,
@@ -1775,6 +1780,25 @@ export const FieldForcePage: React.FC = () => {
                         placeholder="e.g. Senior Territory Sales Officer"
                         className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-medium"
                       />
+                    </div>
+
+                    {/* Linked ERP User Account */}
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                        Linked ERP User Account (Auto-Login Identity)
+                      </label>
+                      <select
+                        value={formLinkedUserId}
+                        onChange={(e) => setFormLinkedUserId(e.target.value)}
+                        className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-medium"
+                      >
+                        <option value="">Auto-Match by Code / Email / Phone</option>
+                        {users.map((u) => (
+                          <option key={u.id} value={u.id}>
+                            {u.name} ({u.userId || u.email}) — {u.role}
+                          </option>
+                        ))}
+                      </select>
                     </div>
 
                     {/* Action Type */}
@@ -3122,6 +3146,25 @@ export const FieldForcePage: React.FC = () => {
                         placeholder="e.g. Senior Territory Sales Officer"
                         className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-medium"
                       />
+                    </div>
+
+                    {/* Linked ERP User Account */}
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                        Linked ERP User Account (Auto-Login Identity)
+                      </label>
+                      <select
+                        value={formLinkedUserId}
+                        onChange={(e) => setFormLinkedUserId(e.target.value)}
+                        className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-medium"
+                      >
+                        <option value="">Auto-Match by Code / Email / Phone</option>
+                        {users.map((u) => (
+                          <option key={u.id} value={u.id}>
+                            {u.name} ({u.userId || u.email}) — {u.role}
+                          </option>
+                        ))}
+                      </select>
                     </div>
 
                     {/* Action Type */}

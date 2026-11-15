@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
 import {
   User,
   Role,
@@ -188,6 +188,10 @@ import {
   calculateEarlySettlement,
   AutomationExecutionReport,
 } from '../lib/installmentAutomation.ts';
+import {
+  resolveEmployeeForERPUser,
+  type ResolvedMobileEmployeeProfile,
+} from '../lib/fieldForceAuth.ts';
 import { sendSMSViaGateway, compileTemplate } from '../lib/smsService.ts';
 import {
   EmployeeSalaryStructure,
@@ -266,6 +270,9 @@ interface ERPContextType {
   currentUser: User;
   setCurrentUser: (user: User) => void;
   isAuthenticated: boolean;
+  erpSessionToken: string | null;
+  getErpAuthHeaders: () => Record<string, string>;
+  currentEmployeeProfile: ResolvedMobileEmployeeProfile | null;
   login: (user: User) => void;
   logout: () => void;
   users: User[];
@@ -700,6 +707,7 @@ interface ERPContextType {
     accuracy?: number;
     date?: string;
     checkInTime?: string;
+    source?: 'mobile-field' | 'erp';
   }) => Promise<{
     accepted: boolean;
     distanceMeters?: number;
@@ -716,6 +724,7 @@ interface ERPContextType {
     accuracy?: number;
     date?: string;
     checkOutTime?: string;
+    source?: 'mobile-field' | 'erp';
   }) => Promise<{
     accepted: boolean;
     distanceMeters?: number;
@@ -1033,6 +1042,101 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return false;
   });
 
+  const [erpSessionToken, setErpSessionToken] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('ensec_erp_session_token');
+    }
+    return null;
+  });
+
+  const getErpAuthHeaders = useCallback((): Record<string, string> => {
+    const token =
+      erpSessionToken ||
+      (typeof window !== 'undefined' ? localStorage.getItem('ensec_erp_session_token') : null) ||
+      '';
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (token) {
+      headers['x-erp-session-token'] = token;
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+    if (currentUser?.id && currentUser.id !== 'guest') {
+      headers['x-user-id'] = String(currentUser.id);
+      if (currentUser.userId || currentUser.salesmanCode) {
+        headers['x-user-code'] = String(currentUser.userId || currentUser.salesmanCode || '');
+      }
+      if (currentUser.email) {
+        headers['x-user-email'] = String(currentUser.email);
+      }
+    }
+    return headers;
+  }, [erpSessionToken, currentUser]);
+
+  const establishServerSession = useCallback(async (userObj: User) => {
+    if (typeof window === 'undefined' || !userObj?.id || userObj.id === 'guest') return;
+    try {
+      const resp = await fetch('/api/auth/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user: { ...userObj, password: '' } }),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data?.token) {
+          setErpSessionToken(data.token);
+          localStorage.setItem('ensec_erp_session_token', data.token);
+        }
+      } else if (resp.status === 401 || resp.status === 403) {
+        // Account deactivated or rejected server-side
+        setIsAuthenticated(false);
+        setCurrentUser(GUEST_USER);
+        setErpSessionToken(null);
+        localStorage.removeItem('ensec_erp_auth');
+        localStorage.removeItem('ensec_erp_uid');
+        localStorage.removeItem('ensec_erp_session_user');
+        localStorage.removeItem('ensec_erp_session_token');
+      }
+    } catch {
+      // Offline / dev restart graceful fallback
+    }
+  }, []);
+
+  // Ensure server session token exists & stays valid when ERP user is authenticated
+  useEffect(() => {
+    if (!isAuthenticated || !currentUser?.id || currentUser.id === 'guest') return;
+    establishServerSession(currentUser);
+  }, [isAuthenticated, currentUser?.id, currentUser?.userId, currentUser?.email, currentUser?.status, establishServerSession]);
+
+  // Listen for cross-tab logout or session changes so Mobile Field Force & ERP immediately reflect logout
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'ensec_erp_auth' && e.newValue !== 'true') {
+        setIsAuthenticated(false);
+        setCurrentUser(GUEST_USER);
+        setErpSessionToken(null);
+      } else if (e.key === 'ensec_erp_session_user' && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue);
+          if (parsed && parsed.id) {
+            if (parsed.status === 'Blocked' || parsed.status === 'Inactive') {
+              setIsAuthenticated(false);
+              setCurrentUser(GUEST_USER);
+              setErpSessionToken(null);
+            } else {
+              setCurrentUser(parsed);
+            }
+          }
+        } catch {}
+      } else if (e.key === 'ensec_erp_session_token') {
+        setErpSessionToken(e.newValue);
+      }
+    };
+    window.addEventListener('storage', handleStorageChange);
+    return () => window.removeEventListener('storage', handleStorageChange);
+  }, []);
+
   // Synchronize and validate active user session against database records
   useEffect(() => {
     if (isAuthenticated && currentUser.id && typeof window !== 'undefined') {
@@ -1075,15 +1179,31 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       localStorage.setItem('ensec_erp_uid', user.id);
       localStorage.setItem('ensec_erp_session_user', JSON.stringify(safeUser));
     }
+    establishServerSession(safeUser);
   };
 
   const logout = () => {
+    const tokenToRevoke =
+      erpSessionToken ||
+      (typeof window !== 'undefined' ? localStorage.getItem('ensec_erp_session_token') : null);
+    if (tokenToRevoke && typeof fetch !== 'undefined') {
+      fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-erp-session-token': tokenToRevoke,
+        },
+        body: JSON.stringify({ token: tokenToRevoke }),
+      }).catch(() => {});
+    }
+    setErpSessionToken(null);
     setIsAuthenticated(false);
     setCurrentUser(GUEST_USER);
     if (typeof window !== 'undefined') {
       localStorage.removeItem('ensec_erp_auth');
       localStorage.removeItem('ensec_erp_uid');
       localStorage.removeItem('ensec_erp_session_user');
+      localStorage.removeItem('ensec_erp_session_token');
       try {
         sessionStorage.clear();
       } catch {}
@@ -3871,6 +3991,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             .filter((row: any) => !isTestOrMockRep(row))
             .map((row: any) => ({
               id: String(row.id),
+              userId: row.user_id ? String(row.user_id) : undefined,
               code: row.code || '',
               name: row.name || '',
               nativeName: row.native_name || undefined,
@@ -4401,6 +4522,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           const mappedUsers: User[] = data.map((row: any) => ({
             id: row.uid ? String(row.uid) : `u-sb-${row.id}`,
             userId:
+              row.user_id ||
               row.uid ||
               (row.email ? row.email.split('@')[0].toUpperCase() : `EMP-${row.id}`),
             name: row.name || 'Staff User',
@@ -5795,6 +5917,16 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     ]);
   };
 
+  const currentEmployeeProfile = useMemo(
+    () =>
+      resolveEmployeeForERPUser(
+        isAuthenticated ? currentUser : null,
+        fieldForceReps,
+        officeLocations
+      ),
+    [isAuthenticated, currentUser, fieldForceReps, officeLocations]
+  );
+
   useEffect(() => {
     if (typeof window === 'undefined' || typeof fetch === 'undefined') return;
     const controller = new AbortController();
@@ -5808,11 +5940,20 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             userId: u.userId,
             name: u.name,
             email: u.email,
+            phone: u.phone,
             role: u.role,
+            designation: u.designation,
             department: u.department,
+            region: u.region,
+            area: u.area,
+            territory: u.territory,
+            isSalesman: u.isSalesman,
+            salesmanCode: u.salesmanCode,
+            monthlySalesTargetBDT: u.monthlySalesTargetBDT,
             status: u.status,
             permissions: u.permissions,
           })),
+          fieldForceReps,
           productionOrders,
           materialIssues,
           rawMaterials,
@@ -5825,7 +5966,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       clearTimeout(timer);
       controller.abort();
     };
-  }, [users, productionOrders, materialIssues, rawMaterials, inventoryBatches]);
+  }, [users, fieldForceReps, productionOrders, materialIssues, rawMaterials, inventoryBatches]);
 
   useEffect(() => {
     // Purge test data Telecom Energy Storage and normalize any remnant products
@@ -14839,17 +14980,20 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const newVisit: VisitLog = {
       ...visit,
       id,
+      userId: visit.userId || currentUser?.id,
+      employeeId: visit.employeeId || currentEmployeeProfile?.employeeId || visit.repId,
+      employeeCode: visit.employeeCode || currentEmployeeProfile?.employeeCode,
     };
     setVisitLogs((prev) => [newVisit, ...prev]);
 
     // Update rep's today visit counts
     setFieldForceReps((reps) =>
       reps.map((r) => {
-        if (r.id === visit.repId) {
+        if (r.id === visit.repId || r.id === newVisit.employeeId) {
           return {
             ...r,
-            todayVisitsCount: r.todayVisitsCount + 1,
-            productiveVisitsCount: visit.isProductive ? r.productiveVisitsCount + 1 : r.productiveVisitsCount,
+            todayVisitsCount: (r.todayVisitsCount || 0) + 1,
+            productiveVisitsCount: visit.isProductive ? (r.productiveVisitsCount || 0) + 1 : (r.productiveVisitsCount || 0),
           };
         }
         return r;
@@ -14891,6 +15035,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (sb) {
       sb.from('field_force_reps')
         .insert({
+          user_id: newRep.userId || null,
           code: newRep.code,
           name: newRep.name,
           native_name: newRep.nativeName,
@@ -14998,6 +15143,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (sb) {
       const target = fieldForceReps.find((r) => r.id === repId);
       const payload: any = {};
+      if (updates.userId !== undefined) payload.user_id = updates.userId || null;
       if (updates.name !== undefined) payload.name = updates.name;
       if (updates.nativeName !== undefined) payload.native_name = updates.nativeName;
       if (updates.pin !== undefined) payload.pin = updates.pin;
@@ -15073,6 +15219,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       execUpdate(payload).then(({ error }) => {
         if (error && error.code === '42703') {
           const fallbackPayload = { ...payload };
+          delete fallbackPayload.user_id;
           delete fallbackPayload.assigned_office_id;
           delete fallbackPayload.assigned_office_name;
           delete fallbackPayload.office_latitude;
@@ -15296,6 +15443,9 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ...order,
       id,
       orderNumber,
+      userId: order.userId || currentUser?.id,
+      employeeId: order.employeeId || currentEmployeeProfile?.employeeId || order.salespersonId,
+      employeeCode: order.employeeCode || currentEmployeeProfile?.employeeCode,
       status: 'Submitted',
       challanNumber: undefined,
       billNumber: autoBillNo,
@@ -16053,6 +16203,9 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const newEntry: TADAEntry = {
       ...entryData,
       id,
+      userId: entryData.userId || currentUser?.id,
+      employeeId: entryData.employeeId || currentEmployeeProfile?.employeeId || entryData.repId,
+      employeeCode: entryData.employeeCode || currentEmployeeProfile?.employeeCode || entryData.ffCode,
       lastModified,
       createdAt: now.toISOString(),
     };
@@ -16288,9 +16441,12 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (!repExists) {
         const newRep: FieldForceRep = {
           id,
+          userId: id,
           code,
           name: newUser.name,
           phone: newUser.phone,
+          email: newUser.email,
+          department: newUser.department,
           designation: newUser.designation,
           region: newUser.region || 'Dhaka Division',
           area: newUser.area || 'Dhaka North',
@@ -16332,6 +16488,9 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         department: newUser.department || 'Operations',
         status: newUser.status || 'Active',
         uid: newUser.userId || id,
+        user_id: newUser.userId || id,
+        is_salesman: Boolean(newUser.isSalesman),
+        salesman_code: newUser.salesmanCode || null,
         permissions: newUser.permissions || {},
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
@@ -16386,11 +16545,14 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           updated_at: new Date().toISOString(),
         };
         if (updates.name) supaUpdates.name = updates.name;
+        if (updates.userId !== undefined) supaUpdates.user_id = updates.userId;
         if (updates.phone !== undefined) supaUpdates.phone = updates.phone;
         if (updates.role) supaUpdates.role = updates.role;
         if (updates.designation !== undefined) supaUpdates.designation = updates.designation;
         if (updates.department !== undefined) supaUpdates.department = updates.department;
         if (updates.status) supaUpdates.status = updates.status;
+        if (updates.isSalesman !== undefined) supaUpdates.is_salesman = updates.isSalesman;
+        if (updates.salesmanCode !== undefined) supaUpdates.salesman_code = updates.salesmanCode;
         if (updates.permissions) supaUpdates.permissions = updates.permissions;
         if (updates.password) supaUpdates.password = updates.password;
 
@@ -16919,6 +17081,9 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ...ticketData,
       id,
       ticketNumber,
+      userId: ticketData.userId || currentUser?.id,
+      employeeId: ticketData.employeeId || currentEmployeeProfile?.employeeId,
+      employeeCode: ticketData.employeeCode || currentEmployeeProfile?.employeeCode,
       createdAt: now,
       updatedAt: now,
     };
@@ -18306,6 +18471,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     accuracy,
     date,
     checkInTime,
+    source = 'erp',
   }) => {
     const todayStr = date || new Date().toISOString().slice(0, 10);
     const nowObj = new Date();
@@ -18331,8 +18497,13 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       const resp = await fetch('/api/attendance/check-in', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          ...getErpAuthHeaders(),
+          ...(source === 'mobile-field' ? { 'x-mobile-portal': 'true' } : {}),
+        },
         body: JSON.stringify({
+          source,
+          userId: currentUser?.id,
           employeeId: employee.id,
           employeeCode: employee.code,
           employeeName: employee.name,
@@ -18359,6 +18530,14 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }),
       });
       const data = await resp.json();
+      if (resp.status === 401) {
+        logout();
+        return {
+          accepted: false,
+          errorCode: 'UNAUTHORIZED',
+          reason: data?.reason || 'ERP session expired. Redirecting to login.',
+        };
+      }
       if (data.accepted && data.record) {
         const rec: AttendanceRecord = data.record;
         setAttendanceRecords((prev) => [
@@ -18489,6 +18668,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     accuracy,
     date,
     checkOutTime,
+    source = 'erp',
   }) => {
     const todayStr = date || new Date().toISOString().slice(0, 10);
     const nowObj = new Date();
@@ -18517,8 +18697,13 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       const resp = await fetch('/api/attendance/check-out', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          ...getErpAuthHeaders(),
+          ...(source === 'mobile-field' ? { 'x-mobile-portal': 'true' } : {}),
+        },
         body: JSON.stringify({
+          source,
+          userId: currentUser?.id,
           employeeId: employee.id,
           employeeCode: employee.code,
           employeeName: employee.name,
@@ -18544,6 +18729,14 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }),
       });
       const data = await resp.json();
+      if (resp.status === 401) {
+        logout();
+        return {
+          accepted: false,
+          errorCode: 'UNAUTHORIZED',
+          reason: data?.reason || 'ERP session expired. Redirecting to login.',
+        };
+      }
       if (data.accepted && data.record) {
         const updatedRec: AttendanceRecord = data.record;
         setAttendanceRecords((prev) => [
@@ -18708,6 +18901,9 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const newLeave: LeaveRecord = {
       ...leave,
       id,
+      userId: leave.userId || currentUser?.id,
+      employeeId: leave.employeeId || currentEmployeeProfile?.employeeId,
+      employeeCode: leave.employeeCode || currentEmployeeProfile?.employeeCode,
       appliedAt: new Date().toISOString(),
       status: 'Pending',
     };
@@ -20294,6 +20490,9 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         currentUser,
         setCurrentUser,
         isAuthenticated,
+        erpSessionToken,
+        getErpAuthHeaders,
+        currentEmployeeProfile,
         login,
         logout,
         users,

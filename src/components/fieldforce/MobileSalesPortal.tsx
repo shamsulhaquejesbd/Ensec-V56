@@ -68,6 +68,12 @@ import {
   formatLateDuration,
   isValidCoordinatePair,
 } from '../../lib/geofence.ts';
+import {
+  getInitials,
+  resolveEmployeeForERPUser,
+  toFieldForceRepView,
+  ResolvedMobileEmployeeProfile,
+} from '../../lib/fieldForceAuth.ts';
 import { ChallanModal } from '../sales/ChallanModal.tsx';
 import { DeliveryOrderModal } from '../sales/DeliveryOrderModal.tsx';
 import { CustomerReceiptModal } from '../sales/CustomerReceiptModal.tsx';
@@ -102,8 +108,15 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
     dispatchAndInvoiceSalesOrder,
     confirmCustomerReceipt,
     salesOrders,
+    visitLogs,
     fieldForceReps,
+    users,
     currentUser,
+    isAuthenticated,
+    erpSessionToken,
+    getErpAuthHeaders,
+    currentEmployeeProfile,
+    logout,
     warehouses,
     logCustomerVisit,
     addCustomer,
@@ -155,62 +168,174 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
   const [selectedMobileOrderForReceipt, setSelectedMobileOrderForReceipt] = useState<any>(null);
   const [deliveryFilterTab, setDeliveryFilterTab] = useState<'pending' | 'delivered' | 'all'>('pending');
 
-  // Active Rep Profile
-  const defaultRep = useMemo(() => {
-    const matchedUserRep = fieldForceReps.find(
-      (r) =>
-        (currentUser?.salesmanCode && r.code?.toLowerCase() === currentUser.salesmanCode.toLowerCase()) ||
-        (currentUser?.email && r.email?.toLowerCase() === currentUser.email.toLowerCase()) ||
-        (currentUser?.phone && r.phone === currentUser.phone)
-    );
-    return (
-      matchedUserRep ||
-      fieldForceReps.find((r) => r.name.includes('Abdur') || r.name.includes('Rahman')) ||
-      fieldForceReps[0] || {
-        id: 'ff-spo-01',
-        name: 'Md. Abdur Rahman (Mirpur)',
-        code: 'SPO-0842',
-        designation: 'Senior Sales Promotion Officer (SPO)',
-        phone: '+880 1711-209841',
-        region: 'Dhaka North',
-        area: 'Mirpur & Pallabi',
-        territory: 'Mirpur DOHS',
-        assignedOfficeId: DEFAULT_OFFICE_LOCATIONS[0].id,
-        assignedOfficeName: DEFAULT_OFFICE_LOCATIONS[0].name,
-        officeLatitude: DEFAULT_OFFICE_LOCATIONS[0].latitude,
-        officeLongitude: DEFAULT_OFFICE_LOCATIONS[0].longitude,
-        allowedRadiusMeters: DEFAULT_ALLOWED_RADIUS_METERS,
-        officeAddress: DEFAULT_OFFICE_LOCATIONS[0].address,
-        locationStatus: 'Active' as const,
-      }
-    );
-  }, [fieldForceReps, currentUser]);
+  // Authoritative Logged-in Employee Identity Resolution from Active ERP Session (No fallbacks or manual switching)
+  const [serverVerifiedEmployee, setServerVerifiedEmployee] = useState<ResolvedMobileEmployeeProfile | null>(null);
 
-  // Selected Retailer / Customer state (matches Screenshot 1 & 2)
+  const clientResolvedProfile = useMemo<ResolvedMobileEmployeeProfile | null>(() => {
+    if (!isAuthenticated || !currentUser || !currentUser.id || currentUser.id === 'guest') {
+      return null;
+    }
+    if (currentUser.status === 'Blocked' || currentUser.status === 'Inactive') {
+      return null;
+    }
+    return (
+      currentEmployeeProfile ||
+      resolveEmployeeForERPUser(currentUser, fieldForceReps, officeLocations)
+    );
+  }, [isAuthenticated, currentUser, currentEmployeeProfile, fieldForceReps, officeLocations]);
+
+  const resolvedProfile = useMemo<ResolvedMobileEmployeeProfile | null>(() => {
+    if (!clientResolvedProfile) return null;
+    if (
+      serverVerifiedEmployee &&
+      serverVerifiedEmployee.userId === clientResolvedProfile.userId
+    ) {
+      return {
+        ...clientResolvedProfile,
+        ...serverVerifiedEmployee,
+        matchedRep: clientResolvedProfile.matchedRep || serverVerifiedEmployee.matchedRep,
+      };
+    }
+    return clientResolvedProfile;
+  }, [clientResolvedProfile, serverVerifiedEmployee]);
+
+  // Verify active ERP session against backend on mount, user switch, or tab navigation
+  useEffect(() => {
+    if (!isAuthenticated || !currentUser || !currentUser.id || currentUser.id === 'guest' || currentUser.status === 'Blocked' || currentUser.status === 'Inactive') {
+      setServerVerifiedEmployee(null);
+      return;
+    }
+
+    let cancelled = false;
+    const verifySessionWithRetry = async (attempt = 0) => {
+      try {
+        const res = await fetch('/api/mobile-field/me', {
+          headers: {
+            ...getErpAuthHeaders(),
+            'x-mobile-portal': 'true',
+          },
+        });
+        if (cancelled) return;
+        if (res.status === 401) {
+          // Retry once briefly if initial login / session establishment is still in flight
+          if (attempt === 0) {
+            setTimeout(() => {
+              if (!cancelled) verifySessionWithRetry(1);
+            }, 650);
+            return;
+          }
+          setServerVerifiedEmployee(null);
+          logout();
+          return;
+        }
+        if (res.ok) {
+          const data = await res.json();
+          if (!cancelled && data?.employee) {
+            setServerVerifiedEmployee(data.employee as ResolvedMobileEmployeeProfile);
+          }
+        }
+      } catch {
+        // Retain client-resolved ERP identity if backend probe is momentarily offline
+      }
+    };
+
+    verifySessionWithRetry(0);
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthenticated, currentUser, erpSessionToken, getErpAuthHeaders, logout]);
+
+  // Redirect immediately if ERP session expires, is blocked, or user logs out
+  useEffect(() => {
+    if (
+      !isAuthenticated ||
+      !currentUser ||
+      !currentUser.id ||
+      currentUser.id === 'guest' ||
+      currentUser.status === 'Blocked' ||
+      currentUser.status === 'Inactive'
+    ) {
+      logout();
+    }
+  }, [isAuthenticated, currentUser, logout]);
+
+  const activeRep = useMemo<FieldForceRep | null>(() => {
+    return resolvedProfile ? toFieldForceRepView(resolvedProfile) : null;
+  }, [resolvedProfile]);
+
+  const safeProfile: ResolvedMobileEmployeeProfile = useMemo(() => {
+    if (resolvedProfile) return resolvedProfile;
+    const fallbackOffice = officeLocations[0] || DEFAULT_OFFICE_LOCATIONS[0];
+    return {
+      userId: String(currentUser?.id || ''),
+      userLoginId: String(currentUser?.userId || currentUser?.id || ''),
+      employeeId: String(currentUser?.id || ''),
+      employeeCode: String(currentUser?.salesmanCode || currentUser?.userId || currentUser?.id || ''),
+      name: String(currentUser?.name || ''),
+      designation: String(currentUser?.designation || currentUser?.role || ''),
+      assignedRole: String(currentUser?.role || ''),
+      erpRole: String(currentUser?.role || ''),
+      department: String(currentUser?.department || 'Operations'),
+      phone: String(currentUser?.phone || ''),
+      email: String(currentUser?.email || ''),
+      region: String(currentUser?.region || ''),
+      area: String(currentUser?.area || ''),
+      territory: String(currentUser?.territory || ''),
+      branchWorkplace: fallbackOffice.name,
+      officeAddress: fallbackOffice.address,
+      assignedOfficeId: fallbackOffice.id,
+      assignedOfficeName: fallbackOffice.name,
+      officeLatitude: fallbackOffice.latitude,
+      officeLongitude: fallbackOffice.longitude,
+      allowedRadiusMeters: fallbackOffice.allowedRadiusMeters || DEFAULT_ALLOWED_RADIUS_METERS,
+      locationStatus: 'Active',
+      shiftStartTime: '09:00',
+      shiftEndTime: '18:00',
+      gracePeriodMinutes: 15,
+      monthlyTargetBDT: Number(currentUser?.monthlySalesTargetBDT || currentUser?.salesTargetBDT || 0),
+      monthlyAchievedBDT: 0,
+      hasEmployeeRecord: false,
+    };
+  }, [resolvedProfile, currentUser, officeLocations]);
+
+  // Selected Retailer / Customer state
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>(
-    customers[0]?.id || 'cust-1'
+    customers[0]?.id || ''
   );
+  useEffect(() => {
+    if (!selectedCustomerId && customers[0]?.id) {
+      setSelectedCustomerId(customers[0].id);
+    }
+  }, [customers, selectedCustomerId]);
+
   const activeCustomer = useMemo(() => {
     return (
       customers.find((c) => c.id === selectedCustomerId) ||
       customers[0] || {
-        id: 'cust-demo',
-        name: 'SORNA COSMETIC AND CONFECTIONERY',
-        ownerName: 'Md. Sorna Ullah',
+        id: 'cust-unselected',
+        name: 'Select Outlet / Customer',
+        ownerName: '',
         channel: 'Retailer',
         customerType: 'Retailer',
         pricingTier: 'Dealer',
-        area: 'Kadamtoly Doria',
-        market: 'Kadamtoly Doria',
-        assignedDistributorName: 'Maharam Store (Bancharampur)',
-        phone: '+880 1819-445522',
-        address: 'Shop 12, Kadamtoly Bazar, Bancharampur',
+        area: safeProfile.area || safeProfile.territory || 'Assigned Market',
+        market: safeProfile.territory || safeProfile.area || 'Assigned Market',
+        assignedDistributorName: distributors[0]?.name || 'Assigned Distributor',
+        phone: '',
+        address: safeProfile.officeAddress || '',
       }
     );
-  }, [customers, selectedCustomerId]);
+  }, [customers, selectedCustomerId, safeProfile, distributors]);
 
   // Selected Market / Beat
-  const [selectedMarket, setSelectedMarket] = useState<string>('Kadamtoly Doria');
+  const [selectedMarket, setSelectedMarket] = useState<string>(
+    () => safeProfile.territory || customers[0]?.territory || safeProfile.area || 'Primary Beat'
+  );
+  useEffect(() => {
+    if (resolvedProfile?.territory) {
+      setSelectedMarket(resolvedProfile.territory);
+    }
+  }, [resolvedProfile?.userId, resolvedProfile?.territory]);
 
   // Customer Selection Modal State & Filters
   const [showCustomerModal, setShowCustomerModal] = useState<boolean>(false);
@@ -321,11 +446,14 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
   // Search input in order catalog
   const [catalogSearch, setCatalogSearch] = useState<string>('');
 
+  const todayDateNowISO = new Date().toISOString().slice(0, 10);
+  const monthStartISO = `${todayDateNowISO.slice(0, 8)}01`;
+
   // -------------------------------------------------------------
   // INVOICE / DELIVERY CONFIRMATION STATE (Matches Screenshot 2)
   // -------------------------------------------------------------
-  const [orderDateFilterFrom, setOrderDateFilterFrom] = useState<string>('2026-10-10');
-  const [orderDateFilterTo, setOrderDateFilterTo] = useState<string>('2026-10-12');
+  const [orderDateFilterFrom, setOrderDateFilterFrom] = useState<string>(monthStartISO);
+  const [orderDateFilterTo, setOrderDateFilterTo] = useState<string>(todayDateNowISO);
   const [invoiceSearch, setInvoiceSearch] = useState<string>('');
   const [selectedOrderForAction, setSelectedOrderForAction] = useState<any | null>(null);
   const [showCancelReasonModal, setShowCancelReasonModal] = useState<boolean>(false);
@@ -338,8 +466,8 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
   // DYNAMIC REPORTS STATE (Matches Screenshot 3)
   // -------------------------------------------------------------
   const [selectedReportType, setSelectedReportType] = useState<string>('Brand Wise Order Vs Invoice');
-  const [reportDateFrom, setReportDateFrom] = useState<string>('2026-10-01');
-  const [reportDateTo, setReportDateTo] = useState<string>('2026-10-12');
+  const [reportDateFrom, setReportDateFrom] = useState<string>(monthStartISO);
+  const [reportDateTo, setReportDateTo] = useState<string>(todayDateNowISO);
   const [reportBrand, setReportBrand] = useState<string>('All');
   const [reportCategory, setReportCategory] = useState<string>('All');
 
@@ -350,17 +478,19 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
   const [newCustOwner, setNewCustOwner] = useState<string>('');
   const [newCustPhone, setNewCustPhone] = useState<string>('');
   const [newCustChannel, setNewCustChannel] = useState<string>('Retailer');
-  const [newCustMarket, setNewCustMarket] = useState<string>('Mirpur 10 Market');
-  const [newCustDistributor, setNewCustDistributor] = useState<string>(distributors[0]?.name || 'Dhaka Power Dist');
+  const [newCustMarket, setNewCustMarket] = useState<string>(() => safeProfile.territory || safeProfile.area || '');
+  const [newCustDistributor, setNewCustDistributor] = useState<string>(distributors[0]?.name || '');
   const [newCustAddress, setNewCustAddress] = useState<string>('');
-  const [newCustGps, setNewCustGps] = useState<string>('Lat: 23.8041, Lng: 90.3667 (Accuracy: 4m)');
+  const [newCustGps, setNewCustGps] = useState<string>(
+    () => `Lat: ${safeProfile.officeLatitude.toFixed(4)}, Lng: ${safeProfile.officeLongitude.toFixed(4)} (Assigned Office)`
+  );
 
   // -------------------------------------------------------------
   // TADA CAPTURE STATE
   // -------------------------------------------------------------
-  const [tadaDate, setTadaDate] = useState<string>('2026-10-12');
-  const [tadaFrom, setTadaFrom] = useState<string>('Mirpur 10 Office');
-  const [tadaTo, setTadaTo] = useState<string>('Kadamtoly Bazar Outlet');
+  const [tadaDate, setTadaDate] = useState<string>(todayDateNowISO);
+  const [tadaFrom, setTadaFrom] = useState<string>(() => safeProfile.assignedOfficeName || 'Assigned Office');
+  const [tadaTo, setTadaTo] = useState<string>(() => activeCustomer.name || '');
   const [tadaMode, setTadaMode] = useState<string>('Bus');
   const [tadaDistance, setTadaDistance] = useState<number>(8);
   const [tadaFare, setTadaFare] = useState<number>(30);
@@ -370,16 +500,28 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
   // -------------------------------------------------------------
   // WARRANTY RMA CAPTURE STATE
   // -------------------------------------------------------------
-  const [warrantySerial, setWarrantySerial] = useState<string>('ENS-LFP-2026-8941');
-  const [warrantyCustName, setWarrantyCustName] = useState<string>('SORNA COSMETIC AND CONFECTIONERY');
-  const [warrantyPhone, setWarrantyPhone] = useState<string>('+880 1819-445522');
+  const [warrantySerial, setWarrantySerial] = useState<string>('');
+  const [warrantyCustName, setWarrantyCustName] = useState<string>(() => activeCustomer.name || '');
+  const [warrantyPhone, setWarrantyPhone] = useState<string>(() => activeCustomer.phone || '');
   const [warrantyDefect, setWarrantyDefect] = useState<string>('Cell Imbalance / Under Voltage');
-  const [warrantyNotes, setWarrantyNotes] = useState<string>('Battery not holding charge past 3 hours. Needs factory technician bench test.');
+  const [warrantyNotes, setWarrantyNotes] = useState<string>('');
+
+  // Keep TADA & Warranty default locations/customers aligned when logged-in employee or active customer changes
+  useEffect(() => {
+    if (resolvedProfile?.assignedOfficeName) {
+      setTadaFrom(resolvedProfile.assignedOfficeName);
+      setNewCustGps(
+        `Lat: ${resolvedProfile.officeLatitude.toFixed(4)}, Lng: ${resolvedProfile.officeLongitude.toFixed(4)} (${resolvedProfile.assignedOfficeName})`
+      );
+    }
+    if (resolvedProfile?.territory || resolvedProfile?.area) {
+      setNewCustMarket(resolvedProfile.territory || resolvedProfile.area);
+    }
+  }, [resolvedProfile?.userId, resolvedProfile?.assignedOfficeName, resolvedProfile?.officeLatitude, resolvedProfile?.officeLongitude, resolvedProfile?.territory, resolvedProfile?.area]);
 
   // -------------------------------------------------------------
   // GPS GEOFENCING ATTENDANCE & LEAVE STATE
   // -------------------------------------------------------------
-  const [selectedAttendanceRepId, setSelectedAttendanceRepId] = useState<string>('');
   const [liveNow, setLiveNow] = useState<Date>(() => new Date());
   const [gpsStatusState, setGpsStatusState] = useState<'idle' | 'detecting' | 'ready' | 'denied' | 'error'>('idle');
   const [capturedGpsCoords, setCapturedGpsCoords] = useState<{
@@ -407,14 +549,10 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
     return () => clearInterval(timer);
   }, [activeTab]);
 
-  // Active employee for attendance (respects selected employee or falls back to logged-in rep)
+  // Active employee for attendance is strictly locked to the authenticated ERP session identity
   const attendanceEmployee: FieldForceRep = useMemo(() => {
-    if (selectedAttendanceRepId) {
-      const found = fieldForceReps.find((r) => r.id === selectedAttendanceRepId);
-      if (found) return found;
-    }
-    return defaultRep as FieldForceRep;
-  }, [selectedAttendanceRepId, fieldForceReps, defaultRep]);
+    return activeRep || toFieldForceRepView(safeProfile);
+  }, [activeRep, safeProfile]);
 
   // Resolve assigned office coordinates & radius for attendance employee
   const assignedOfficeConfig = useMemo(() => {
@@ -556,6 +694,7 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
         accuracy: gps.accuracy,
         date: todayDateISO,
         checkInTime: hhmm,
+        source: 'mobile-field',
       });
       if (res.accepted) {
         setAttendanceResultAlert({
@@ -599,6 +738,7 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
         accuracy: gps.accuracy,
         date: todayDateISO,
         checkOutTime: hhmm,
+        source: 'mobile-field',
       });
       if (res.accepted) {
         setAttendanceResultAlert({
@@ -697,25 +837,164 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
     };
   }, [cart, products, activeCustomer, enabledSchemes]);
 
-  // Handle Save Order (Capture retailer-wise without stock movement)
-  const handleSaveOrder = () => {
+  // Authenticated Mobile Backend Sync Helper (stamps session headers & enforces logout on 401)
+  const postAuthenticatedMobileApi = useCallback(
+    async (endpoint: string, payload: Record<string, any>): Promise<boolean> => {
+      try {
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            ...getErpAuthHeaders(),
+            'x-mobile-portal': 'true',
+          },
+          body: JSON.stringify(payload),
+        });
+        if (res.status === 401) {
+          setBannerNotice('ERP session expired. Redirecting to login...');
+          logout();
+          return false;
+        }
+        if (res.status === 403) {
+          const errData = await res.json().catch(() => ({}));
+          setBannerNotice(`⚠️ ${errData?.error || 'Authorization error for employee identity.'}`);
+          return false;
+        }
+        return res.ok;
+      } catch (err) {
+        console.warn(`Mobile sync (${endpoint}) note:`, err);
+        return false;
+      }
+    },
+    [getErpAuthHeaders, logout]
+  );
+
+  // Determine whether a sales order belongs to the currently logged-in ERP user/employee
+  const isOrderOwnedByCurrentUser = useCallback(
+    (order: any): boolean => {
+      if (!order) return false;
+      const uid = safeProfile.userId.toLowerCase();
+      const eid = safeProfile.employeeId.toLowerCase();
+      const ecode = safeProfile.employeeCode.toLowerCase();
+      const ename = safeProfile.name.toLowerCase();
+      return (
+        (order.userId && String(order.userId).toLowerCase() === uid) ||
+        (order.employeeId && (String(order.employeeId).toLowerCase() === eid || String(order.employeeId).toLowerCase() === ecode)) ||
+        (order.employeeCode && ecode && String(order.employeeCode).toLowerCase() === ecode) ||
+        (order.salespersonId && (String(order.salespersonId).toLowerCase() === eid || String(order.salespersonId).toLowerCase() === uid || (ecode && String(order.salespersonId).toLowerCase() === ecode))) ||
+        (order.salespersonName && ename && String(order.salespersonName).toLowerCase() === ename)
+      );
+    },
+    [safeProfile]
+  );
+
+  // Real-time KPI summary computed strictly from the logged-in user's ERP transactions
+  const mobileKpiSummary = useMemo(() => {
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const currentMonthPrefix = todayStr.slice(0, 7);
+    const prevDate = new Date();
+    prevDate.setMonth(prevDate.getMonth() - 1);
+    const lastMonthPrefix = prevDate.toISOString().slice(0, 7);
+
+    const myOrders = salesOrders.filter((o) => o.status !== 'Cancelled' && isOrderOwnedByCurrentUser(o));
+    const todayOrderBDT = myOrders
+      .filter((o) => String(o.date || '').startsWith(todayStr))
+      .reduce((s, o) => s + (Number(o.netAmountBDT) || 0), 0);
+    const todayInvoiceBDT = myOrders
+      .filter(
+        (o) =>
+          String(o.date || '').startsWith(todayStr) &&
+          ['Approved', 'Dispatched & Invoiced', 'Dispatched', 'Delivered', 'Invoiced'].includes(String(o.status))
+      )
+      .reduce((s, o) => s + (Number(o.netAmountBDT) || 0), 0);
+    const currentMonthAchievedBDT = myOrders
+      .filter((o) => String(o.date || '').startsWith(currentMonthPrefix))
+      .reduce((s, o) => s + (Number(o.netAmountBDT) || 0), 0);
+
+    const monthlyTargetBDT = Number(safeProfile.monthlyTargetBDT) || 0;
+    const effectiveAchieved = currentMonthAchievedBDT > 0 ? currentMonthAchievedBDT : Number(safeProfile.monthlyAchievedBDT) || 0;
+    const achievePercent = monthlyTargetBDT > 0 ? (effectiveAchieved / monthlyTargetBDT) * 100 : 0;
+    const dayOfMonth = Math.max(1, new Date().getDate());
+    const daysInMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate();
+    const expectedPace = monthlyTargetBDT > 0 ? (monthlyTargetBDT / daysInMonth) * dayOfMonth : 0;
+    const runRateRatio = expectedPace > 0 ? effectiveAchieved / expectedPace : 0;
+
+    // Customer-specific monthly sales
+    const activeCustOrders = salesOrders.filter(
+      (o) =>
+        o.status !== 'Cancelled' &&
+        (o.customerId === activeCustomer.id ||
+          (activeCustomer.name && String(o.customerName || '').toLowerCase() === activeCustomer.name.toLowerCase()))
+    );
+    const customerCurrentMonthSales = activeCustOrders
+      .filter((o) => String(o.date || '').startsWith(currentMonthPrefix))
+      .reduce((s, o) => s + (Number(o.netAmountBDT) || 0), 0);
+    const customerLastMonthSales = activeCustOrders
+      .filter((o) => String(o.date || '').startsWith(lastMonthPrefix))
+      .reduce((s, o) => s + (Number(o.netAmountBDT) || 0), 0);
+
+    return {
+      todayOrderBDT,
+      todayInvoiceBDT,
+      monthlyTargetBDT,
+      effectiveAchieved,
+      achievePercent,
+      runRateRatio,
+      customerCurrentMonthSales,
+      customerLastMonthSales,
+      myOrders,
+    };
+  }, [salesOrders, isOrderOwnedByCurrentUser, safeProfile.monthlyTargetBDT, safeProfile.monthlyAchievedBDT, activeCustomer.id, activeCustomer.name]);
+
+  // Helper to resolve current coordinates (real device GPS if permitted, else assigned office)
+  const getBestAvailableCoords = useCallback((): Promise<{ lat: number; lng: number }> => {
+    if (capturedGpsCoords && Date.now() - capturedGpsCoords.capturedAtMs < 5 * 60 * 1000) {
+      return Promise.resolve({ lat: capturedGpsCoords.latitude, lng: capturedGpsCoords.longitude });
+    }
+    if (typeof navigator !== 'undefined' && navigator.geolocation) {
+      return new Promise((resolve) => {
+        navigator.geolocation.getCurrentPosition(
+          (pos) =>
+            resolve({
+              lat: Number(pos.coords.latitude.toFixed(6)),
+              lng: Number(pos.coords.longitude.toFixed(6)),
+            }),
+          () =>
+            resolve({
+              lat: safeProfile.officeLatitude,
+              lng: safeProfile.officeLongitude,
+            }),
+          { enableHighAccuracy: true, timeout: 3500, maximumAge: 60000 }
+        );
+      });
+    }
+    return Promise.resolve({ lat: safeProfile.officeLatitude, lng: safeProfile.officeLongitude });
+  }, [capturedGpsCoords, safeProfile.officeLatitude, safeProfile.officeLongitude]);
+
+  // Handle Save Order (Capture retailer-wise tied to logged-in ERP user/employee)
+  const handleSaveOrder = async () => {
     if (cartSummary.itemsList.length === 0) {
-      alert('Please add at least one product before saving.');
+      setBannerNotice('⚠️ Please add at least one product before saving.');
       return;
     }
 
     const warehouseId = warehouses[0]?.id || 'wh-1';
-    const warehouseName = warehouses[0]?.name || 'Dhaka Central Hub';
+    const warehouseName = warehouses[0]?.name || safeProfile.assignedOfficeName || 'Central Hub';
+    const todayStr = new Date().toISOString().substring(0, 10);
+    const nowTimeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const coords = await getBestAvailableCoords();
 
     createSalesOrder({
-      date: new Date().toISOString().substring(0, 10),
+      date: todayStr,
       channel: activeCustomer.channel || 'Retailer',
-      distributorId: activeCustomer.assignedDistributorId || 'dist-1',
-      distributorName: activeCustomer.assignedDistributorName || 'Maharam Store',
+      distributorId: activeCustomer.assignedDistributorId || distributors[0]?.id || 'dist-1',
+      distributorName: activeCustomer.assignedDistributorName || distributors[0]?.name || 'Assigned Distributor',
       customerId: activeCustomer.id,
       customerName: activeCustomer.name,
-      salespersonId: defaultRep.id,
-      salespersonName: defaultRep.name,
+      userId: safeProfile.userId,
+      employeeId: safeProfile.employeeId,
+      employeeCode: safeProfile.employeeCode,
+      salespersonId: safeProfile.employeeId,
+      salespersonName: safeProfile.name,
       warehouseId,
       warehouseName,
       items: cartSummary.itemsList.map((item) => ({
@@ -734,52 +1013,79 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
       paidAmountBDT: 0,
       dueAmountBDT: cartSummary.netPayable,
       paymentMethod: 'Credit',
-      notes: `Order Captured by ${defaultRep.name} via Mobile Field Force App. Step 1: Captured (Pending Delivery Confirmation).`,
+      notes: `Order Captured by ${safeProfile.name} (${safeProfile.employeeCode}) via Mobile Field Force App.`,
     });
 
     logCustomerVisit({
-      repId: defaultRep.id,
-      repName: defaultRep.name,
+      userId: safeProfile.userId,
+      employeeId: safeProfile.employeeId,
+      employeeCode: safeProfile.employeeCode,
+      repId: safeProfile.employeeId,
+      repName: safeProfile.name,
       customerId: activeCustomer.id,
       customerName: activeCustomer.name,
-      date: new Date().toISOString().substring(0, 10),
-      time: '03:30 PM',
+      date: todayStr,
+      time: nowTimeStr,
       isProductive: true,
       orderPlacedBDT: cartSummary.netPayable,
       purpose: 'Regular Sales Visit',
       feedback: `Captured order for ${cartSummary.totalQty} units. Total value: ৳ ${cartSummary.netPayable.toLocaleString()}.`,
-      latitude: 23.8041,
-      longitude: 90.3667,
+      latitude: coords.lat,
+      longitude: coords.lng,
     });
 
-    fetch('/api/orders', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        customerName: activeCustomer.name,
-        salespersonName: defaultRep.name,
-        date: new Date().toISOString().substring(0, 10),
-        netAmountBDT: cartSummary.netPayable,
-        status: 'Pending Delivery',
-        itemsJson: cartSummary.itemsList.map((item) => ({
-          productId: item.product.id,
-          productName: item.product.name,
-          quantity: item.qty,
-          unitPriceBDT: item.tp,
-          lineTotal: item.lineTotal,
-        })),
-        notes: `Order captured by ${defaultRep.name} via Mobile App`,
-      }),
-    }).catch((err) => console.warn('Cloud SQL save note:', err));
+    postAuthenticatedMobileApi('/api/orders', {
+      userId: safeProfile.userId,
+      employeeId: safeProfile.employeeId,
+      employeeCode: safeProfile.employeeCode,
+      salespersonId: safeProfile.employeeId,
+      salespersonName: safeProfile.name,
+      customerId: activeCustomer.id,
+      customerName: activeCustomer.name,
+      date: todayStr,
+      netAmountBDT: cartSummary.netPayable,
+      status: 'Pending Delivery',
+      itemsJson: cartSummary.itemsList.map((item) => ({
+        productId: item.product.id,
+        productName: item.product.name,
+        quantity: item.qty,
+        unitPriceBDT: item.tp,
+        lineTotal: item.lineTotal,
+      })),
+      notes: `Order captured by ${safeProfile.name} (${safeProfile.employeeCode}) via Mobile App`,
+    });
 
-    setBannerNotice(`✅ Order successfully captured and saved to Database for ${activeCustomer.name}!`);
+    postAuthenticatedMobileApi('/api/visits', {
+      userId: safeProfile.userId,
+      employeeId: safeProfile.employeeId,
+      employeeCode: safeProfile.employeeCode,
+      repId: safeProfile.employeeId,
+      repName: safeProfile.name,
+      customerId: activeCustomer.id,
+      customerName: activeCustomer.name,
+      date: todayStr,
+      time: nowTimeStr,
+      isProductive: true,
+      orderPlacedBDT: cartSummary.netPayable,
+      latitude: coords.lat,
+      longitude: coords.lng,
+    });
+
+    setBannerNotice(`Order successfully captured by ${safeProfile.name} for ${activeCustomer.name}.`);
     setCart({});
     setActiveTab('invoice');
   };
 
-  // Filtered pending orders for Delivery Confirmation / Invoice
+  // Filtered orders for Delivery Confirmation / Invoice (scoped to logged-in officer, or all for executives)
   const pendingOrdersForConfirmation = useMemo(() => {
+    const canViewAllFieldOrders = ['Super Admin', 'Sales Head', 'Managing Director', 'System Administrator'].includes(
+      safeProfile.erpRole
+    );
     return salesOrders.filter((order) => {
+      if (!canViewAllFieldOrders && !isOrderOwnedByCurrentUser(order)) {
+        return false;
+      }
+
       const matchSearch =
         invoiceSearch === '' ||
         order.orderNumber.toLowerCase().includes(invoiceSearch.toLowerCase()) ||
@@ -801,11 +1107,11 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
       }
       return true;
     });
-  }, [salesOrders, invoiceSearch, deliveryFilterTab]);
+  }, [salesOrders, invoiceSearch, deliveryFilterTab, safeProfile.erpRole, isOrderOwnedByCurrentUser]);
 
   // Handle Full Delivery Confirmation
   const handleConfirmFullDelivery = (order: any) => {
-    setBannerNotice(`✅ Order ${order.orderNumber} confirmed in FULL! Delivery Challan created & inventory deducted.`);
+    setBannerNotice(`Order ${order.orderNumber} confirmed in FULL! Delivery Challan created & inventory deducted.`);
     setShowFullConfirmModal(false);
     setSelectedOrderForAction(null);
   };
@@ -813,7 +1119,7 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
   // Handle Order Cancellation
   const handleConfirmOrderCancellation = () => {
     if (!selectedOrderForAction) return;
-    setBannerNotice(`❌ Order ${selectedOrderForAction.orderNumber} cancelled. Reason: ${cancelReason}.`);
+    setBannerNotice(`Order ${selectedOrderForAction.orderNumber} cancelled. Reason: ${cancelReason}.`);
     setShowCancelReasonModal(false);
     setSelectedOrderForAction(null);
   };
@@ -822,7 +1128,7 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
   const handleAddNewCustomer = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newCustName || !newCustPhone) {
-      alert('Please fill in Outlet Name and Mobile Number.');
+      setBannerNotice('⚠️ Please fill in Outlet Name and Mobile Number.');
       return;
     }
 
@@ -835,35 +1141,36 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
       channel: 'Distributor Sales',
       customerType: 'Retailer',
       pricingTier: 'Dealer / Retailer Channel',
-      assignedDistributorId: 'dist-1',
-      assignedDistributorName: newCustDistributor,
-      assignedSalespersonId: defaultRep.id,
-      assignedSalespersonName: defaultRep.name,
+      assignedDistributorId: distributors[0]?.id || 'dist-1',
+      assignedDistributorName: newCustDistributor || distributors[0]?.name || 'Assigned Distributor',
+      assignedSalespersonId: safeProfile.employeeId,
+      assignedSalespersonName: safeProfile.name,
       creditLimitBDT: 50000,
-      district: 'Dhaka',
-      territory: newCustMarket || 'Mirpur',
+      district: safeProfile.area || 'Dhaka',
+      territory: newCustMarket || safeProfile.territory || 'Assigned Market',
       status: 'Active',
       address: newCustAddress || newCustMarket,
     });
 
-    fetch('/api/customers', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        code: newCode,
-        name: newCustName,
-        phone: newCustPhone,
-        email: `${newCustName.toLowerCase().replace(/\s+/g, '')}@retailer.bd`,
-        channel: 'Distributor Sales',
-        customerType: 'Retailer',
-        pricingTier: 'Dealer / Retailer Channel',
-        assignedDistributorName: newCustDistributor,
-        territory: newCustMarket || 'Mirpur',
-        address: newCustAddress || newCustMarket,
-      }),
-    }).catch((err) => console.warn('Cloud SQL save note:', err));
+    postAuthenticatedMobileApi('/api/customers', {
+      userId: safeProfile.userId,
+      employeeId: safeProfile.employeeId,
+      employeeCode: safeProfile.employeeCode,
+      salespersonId: safeProfile.employeeId,
+      salespersonName: safeProfile.name,
+      code: newCode,
+      name: newCustName,
+      phone: newCustPhone,
+      email: `${newCustName.toLowerCase().replace(/\s+/g, '')}@retailer.bd`,
+      channel: 'Distributor Sales',
+      customerType: 'Retailer',
+      pricingTier: 'Dealer / Retailer Channel',
+      assignedDistributorName: newCustDistributor,
+      territory: newCustMarket || safeProfile.territory || 'Assigned Market',
+      address: newCustAddress || newCustMarket,
+    });
 
-    setBannerNotice(`🎉 New Outlet "${newCustName}" enrolled & saved to Database!`);
+    setBannerNotice(`New Outlet "${newCustName}" enrolled under ${safeProfile.name} (${safeProfile.employeeCode}).`);
     setNewCustName('');
     setNewCustOwner('');
     setNewCustPhone('');
@@ -873,57 +1180,74 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
   // Handle TADA Claim Submission
   const handleSaveTADA = (e: React.FormEvent) => {
     e.preventDefault();
+    const resolvedApprover =
+      safeProfile.tadaApproverName ||
+      users.find((u) => u.id === safeProfile.tadaApproverId)?.name ||
+      'Pending HOS Approval';
+
     addTADA({
-      ffCode: defaultRep.code,
-      ffName: defaultRep.name,
+      userId: safeProfile.userId,
+      employeeId: safeProfile.employeeId,
+      employeeCode: safeProfile.employeeCode,
+      repId: safeProfile.employeeId,
+      ffCode: safeProfile.employeeCode,
+      ffName: safeProfile.name,
       tranDate: tadaDate,
-      distributorName: activeCustomer.assignedDistributorName || 'Maharam Store',
-      routeName: activeCustomer.territory || selectedMarket || 'Kadamtoly Doria',
+      distributorName: activeCustomer.assignedDistributorName || distributors[0]?.name || 'Assigned Distributor',
+      routeName: activeCustomer.territory || selectedMarket || safeProfile.territory,
       fromAddress: tadaFrom,
       toAddress: tadaTo,
       mode: tadaMode,
       distance: tadaDistance,
       amount: tadaFare + tadaDA,
       status: 'Pending_HOS_Approval',
-      approverName: 'Mohammad Faruk (HOS)',
+      approverName: resolvedApprover,
       remarks: tadaRemarks,
     });
 
-    fetch('/api/tada', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ffCode: defaultRep.code,
-        ffName: defaultRep.name,
-        tranDate: tadaDate,
-        routeName: activeCustomer.territory || selectedMarket || 'Kadamtoly Doria',
-        fromAddress: tadaFrom,
-        toAddress: tadaTo,
-        mode: tadaMode,
-        distance: tadaDistance,
-        amount: tadaFare + tadaDA,
-        status: 'Pending_HOS_Approval',
-        remarks: tadaRemarks,
-      }),
-    }).catch((err) => console.warn('Cloud SQL save note:', err));
+    postAuthenticatedMobileApi('/api/tada', {
+      userId: safeProfile.userId,
+      employeeId: safeProfile.employeeId,
+      employeeCode: safeProfile.employeeCode,
+      repId: safeProfile.employeeId,
+      ffCode: safeProfile.employeeCode,
+      ffName: safeProfile.name,
+      tranDate: tadaDate,
+      routeName: activeCustomer.territory || selectedMarket || safeProfile.territory,
+      fromAddress: tadaFrom,
+      toAddress: tadaTo,
+      mode: tadaMode,
+      distance: tadaDistance,
+      amount: tadaFare + tadaDA,
+      status: 'Pending_HOS_Approval',
+      approverName: resolvedApprover,
+      remarks: tadaRemarks,
+    });
 
-    setBannerNotice(`🚗 TADA Claim of ৳ ${(tadaFare + tadaDA).toLocaleString()} submitted & stored in Database!`);
+    setBannerNotice(`TADA Claim of ৳ ${(tadaFare + tadaDA).toLocaleString()} submitted under ${safeProfile.name} (${safeProfile.employeeCode}).`);
     setActiveTab('home');
   };
 
   // Handle Warranty RMA Claim
   const handleSaveWarranty = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!warrantySerial.trim() || !warrantyCustName.trim()) {
+      setBannerNotice('⚠️ Please enter the Battery Serial Number and Customer Name.');
+      return;
+    }
     const newTicketNo = `W-MOB-${Date.now().toString().slice(-4)}`;
     addWarrantyTicket({
+      userId: safeProfile.userId,
+      employeeId: safeProfile.employeeId,
+      employeeCode: safeProfile.employeeCode,
       ticketNumber: newTicketNo,
       status: 'Complaint Registered',
       urgency: 'Normal',
       customerName: warrantyCustName,
       mobileNumber: warrantyPhone,
       customerType: 'Dealer',
-      address: activeCustomer.address || 'Dhaka',
-      district: 'Dhaka',
+      address: activeCustomer.address || safeProfile.officeAddress || 'Dhaka',
+      district: safeProfile.area || 'Dhaka',
       dealerOrDistributorName: activeCustomer.name,
       ownershipType: 'Ensec Battery',
       batteryBrand: 'Ensec Lithium BD',
@@ -933,7 +1257,7 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
       capacityAh: 100,
       nominalVoltage: 12,
       complaintDate: new Date().toISOString(),
-      complaintReceivedBy: defaultRep.name,
+      complaintReceivedBy: safeProfile.name,
       complaintChannel: 'Other',
       reportedProblem: warrantyDefect,
       problemCategory: 'BMS Cutoff / No Voltage Output',
@@ -944,22 +1268,22 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
       isSafetyHold: false,
     });
 
-    fetch('/api/warranty', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ticketNumber: newTicketNo,
-        serialNumber: warrantySerial,
-        customerName: warrantyCustName,
-        mobileNumber: warrantyPhone,
-        batteryModel: 'Ensec LiFePO4 12V 100Ah',
-        defectCategory: warrantyDefect,
-        status: 'Complaint Registered',
-        notes: warrantyNotes,
-      }),
-    }).catch((err) => console.warn('Cloud SQL save note:', err));
+    postAuthenticatedMobileApi('/api/warranty', {
+      userId: safeProfile.userId,
+      employeeId: safeProfile.employeeId,
+      employeeCode: safeProfile.employeeCode,
+      ticketNumber: newTicketNo,
+      serialNumber: warrantySerial,
+      customerName: warrantyCustName,
+      mobileNumber: warrantyPhone,
+      batteryModel: 'Ensec LiFePO4 12V 100Ah',
+      defectCategory: warrantyDefect,
+      complaintReceivedBy: safeProfile.name,
+      status: 'Complaint Registered',
+      notes: warrantyNotes,
+    });
 
-    setBannerNotice(`🛡️ Warranty RMA ticket logged for Serial ${warrantySerial} & saved to Database!`);
+    setBannerNotice(`Warranty RMA ticket ${newTicketNo} logged by ${safeProfile.name} for Serial ${warrantySerial}.`);
     setActiveTab('home');
   };
 
@@ -987,16 +1311,28 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
         agreedSpecialDiscountPercent: Number(crmSpecialDiscount) || 0,
         contractTermMonths: Number(crmContractTerm) || 12,
         expectedClosingDate: crmClosingDate,
-        salespersonId: defaultRep.id,
-        salespersonName: defaultRep.name,
-        assignedRepName: defaultRep.name,
+        salespersonId: safeProfile.employeeId,
+        salespersonName: safeProfile.name,
+        assignedRepName: safeProfile.name,
         communicationNotes: crmNotes.trim()
-          ? [{ date: new Date().toISOString().substring(0, 10), author: defaultRep.name, note: crmNotes.trim() }]
+          ? [{ date: new Date().toISOString().substring(0, 10), author: safeProfile.name, note: crmNotes.trim() }]
           : [],
       });
 
-      setBannerNotice(`🤝 CRM Agreement Lead "${clientNameClean}" registered successfully & saved to Database!`);
-      // Reset form
+      await postAuthenticatedMobileApi('/api/crm-leads', {
+        userId: safeProfile.userId,
+        employeeId: safeProfile.employeeId,
+        employeeCode: safeProfile.employeeCode,
+        salespersonId: safeProfile.employeeId,
+        salespersonName: safeProfile.name,
+        clientName: clientNameClean,
+        channel: crmChannel,
+        stage: crmStage,
+        expectedVolumeUnits: Number(crmExpectedVolume) || 10,
+        dealValueBDT: Number(crmDealValue) || 0,
+      });
+
+      setBannerNotice(`CRM Agreement Lead "${clientNameClean}" registered under ${safeProfile.name} (${safeProfile.employeeCode}).`);
       setCrmClientName('');
       setCrmContactPerson('');
       setCrmPhone('');
@@ -1028,6 +1364,107 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
       return matchBrand && matchSearch;
     });
   }, [products, selectedBrandFilter, catalogSearch]);
+
+  // Live dynamic Mobile Reports computed strictly from the logged-in user's Sales Orders, Visits & Product catalog
+  const liveMobileReports = useMemo(() => {
+    const ordersInRange = mobileKpiSummary.myOrders.filter((o) => {
+      const d = String(o.date || '').slice(0, 10);
+      return (!reportDateFrom || d >= reportDateFrom) && (!reportDateTo || d <= reportDateTo);
+    });
+    const myVisitsInRange = visitLogs.filter((v) => {
+      const owned =
+        (v.userId && v.userId === safeProfile.userId) ||
+        (v.employeeId && (v.employeeId === safeProfile.employeeId || v.employeeId === safeProfile.employeeCode)) ||
+        (v.repId && (v.repId === safeProfile.employeeId || v.repId === safeProfile.userId)) ||
+        (v.repName && v.repName.toLowerCase() === safeProfile.name.toLowerCase());
+      if (!owned) return false;
+      const d = String(v.date || '').slice(0, 10);
+      return (!reportDateFrom || d >= reportDateFrom) && (!reportDateTo || d <= reportDateTo);
+    });
+
+    const isInvoiced = (st: string) =>
+      ['Approved', 'Dispatched & Invoiced', 'Dispatched', 'Delivered', 'Invoiced'].includes(String(st));
+
+    const brandMap = new Map<string, { brand: string; pcSet: Set<string>; orderAmt: number; ecSet: Set<string>; salesAmt: number }>();
+    const catMap = new Map<string, { category: string; orderAmt: number; invoiceAmt: number }>();
+    const prodMap = new Map<string, { name: string; ec: number; pc: number; orderQty: number; invoiceQty: number }>();
+
+    ordersInRange.forEach((o) => {
+      const custKey = String(o.customerId || o.customerName || o.id);
+      const invoiced = isInvoiced(String(o.status));
+      (o.items || []).forEach((it: any) => {
+        const prod = products.find((p) => p.id === it.productId || p.name === it.productName);
+        const brandName = prod?.brand || 'Ensec Lithium';
+        const catName = prod?.category || 'Lithium Batteries';
+        if (reportBrand !== 'All' && brandName.toLowerCase() !== reportBrand.toLowerCase()) return;
+        if (reportCategory !== 'All' && catName.toLowerCase() !== reportCategory.toLowerCase()) return;
+
+        const lineAmt = Number(it.lineTotalBDT) || Number(it.quantity || 0) * Number(it.unitPriceBDT || 0);
+        const qty = Number(it.quantity) || 0;
+
+        const bEntry = brandMap.get(brandName) || { brand: brandName, pcSet: new Set(), orderAmt: 0, ecSet: new Set(), salesAmt: 0 };
+        bEntry.pcSet.add(custKey);
+        bEntry.orderAmt += lineAmt;
+        if (invoiced) {
+          bEntry.ecSet.add(custKey);
+          bEntry.salesAmt += lineAmt;
+        }
+        brandMap.set(brandName, bEntry);
+
+        const cEntry = catMap.get(catName) || { category: catName, orderAmt: 0, invoiceAmt: 0 };
+        cEntry.orderAmt += lineAmt;
+        if (invoiced) cEntry.invoiceAmt += lineAmt;
+        catMap.set(catName, cEntry);
+
+        const pName = it.productName || prod?.name || 'Battery Unit';
+        const pEntry = prodMap.get(pName) || { name: pName, ec: 0, pc: 0, orderQty: 0, invoiceQty: 0 };
+        pEntry.pc += 1;
+        pEntry.orderQty += qty;
+        if (invoiced) {
+          pEntry.ec += 1;
+          pEntry.invoiceQty += qty;
+        }
+        prodMap.set(pName, pEntry);
+      });
+    });
+
+    const totalTarget = mobileKpiSummary.monthlyTargetBDT;
+    const catCount = Math.max(1, catMap.size);
+    return {
+      brandRows: Array.from(brandMap.values()),
+      categoryRows: Array.from(catMap.values()).map((c) => {
+        const catTarget = Math.round(totalTarget / catCount);
+        const achPer = catTarget > 0 ? (c.invoiceAmt / catTarget) * 100 : 0;
+        const rrAmt = Math.round(c.invoiceAmt / Math.max(1, new Date().getDate()));
+        return { ...c, targetAmt: catTarget, achPer, rrAmt };
+      }),
+      productRows: Array.from(prodMap.values()),
+      visitCount: myVisitsInRange.length,
+    };
+  }, [mobileKpiSummary.myOrders, mobileKpiSummary.monthlyTargetBDT, visitLogs, products, reportDateFrom, reportDateTo, reportBrand, reportCategory, safeProfile]);
+
+  // Enforce strict ERP session guard before rendering Mobile Field Force App
+  if (
+    !isAuthenticated ||
+    !currentUser ||
+    !currentUser.id ||
+    currentUser.id === 'guest' ||
+    currentUser.status === 'Blocked' ||
+    currentUser.status === 'Inactive' ||
+    !resolvedProfile
+  ) {
+    return (
+      <div className="w-full min-h-screen bg-slate-100 dark:bg-[#0b0c0e] flex items-center justify-center p-6">
+        <div className="max-w-sm w-full p-6 rounded-2xl bg-white dark:bg-[#1e2026] border border-slate-200 dark:border-white/10 text-center space-y-3 shadow-xl">
+          <ShieldCheck className="w-8 h-8 text-amber-500 mx-auto" />
+          <h3 className="font-bold text-sm text-slate-900 dark:text-white">Verifying Ensec ERP Session...</h3>
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            Access to the Mobile Field Force App requires an active authenticated Ensec ERP session.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="w-full min-h-screen bg-slate-100 dark:bg-[#0b0c0e] flex justify-center no-scrollbar transition-colors duration-200">
@@ -1102,22 +1539,32 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
           {/* ========================================================= */}
           {activeTab === 'home' && (
             <div className="p-4 space-y-4">
-              {/* SPO Profile Card */}
+              {/* Authenticated Employee Profile Card */}
               <div className="p-3.5 rounded-2xl bg-white dark:bg-[#1e2026] border border-slate-200 dark:border-white/5 space-y-3 shadow-xs">
-                <div className="flex items-start justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-amber-500 to-orange-600 flex items-center justify-center font-bold text-white shadow-md text-base relative">
-                      <span>AR</span>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-amber-500 to-orange-600 flex items-center justify-center font-bold text-white shadow-md text-base relative shrink-0">
+                      <span>{getInitials(resolvedProfile.name)}</span>
                       <span className="absolute bottom-0 right-0 w-3.5 h-3.5 rounded-full bg-emerald-500 border-2 border-white dark:border-[#1e2026]"></span>
                     </div>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <h2 className="font-bold text-sm text-slate-900 dark:text-white">{defaultRep.name}</h2>
-                        
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <h2 className="font-bold text-sm text-slate-900 dark:text-white truncate">
+                          {resolvedProfile.name}
+                        </h2>
+                        <span className="px-1.5 py-0.5 rounded-md text-[10px] font-bold bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30 shrink-0">
+                          {resolvedProfile.assignedRole}
+                        </span>
+                      </div>
+                      <div className="text-[11px] font-semibold text-blue-600 dark:text-blue-400 mt-0.5 truncate">
+                        ID: {resolvedProfile.employeeCode} • {resolvedProfile.designation}
                       </div>
                       <p className="text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-1 mt-0.5">
                         <MapPin className="w-3 h-3 text-amber-500 shrink-0" />
-                        <span>House-9, Mirpur DOHS, Dhaka-1216</span>
+                        <span className="truncate">
+                          {resolvedProfile.assignedOfficeName}
+                          {resolvedProfile.officeAddress ? ` • ${resolvedProfile.officeAddress}` : ''}
+                        </span>
                       </p>
                     </div>
                   </div>
@@ -1184,22 +1631,44 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
 
                   {/* Make Visit */}
                   <div
-                    onClick={() => {
+                    onClick={async () => {
+                      const todayStr = new Date().toISOString().substring(0, 10);
+                      const nowTimeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                      const coords = await getBestAvailableCoords();
                       logCustomerVisit({
-                        repId: defaultRep.id,
-                        repName: defaultRep.name,
+                        userId: safeProfile.userId,
+                        employeeId: safeProfile.employeeId,
+                        employeeCode: safeProfile.employeeCode,
+                        repId: safeProfile.employeeId,
+                        repName: safeProfile.name,
                         customerId: activeCustomer.id,
                         customerName: activeCustomer.name,
-                        date: new Date().toISOString().substring(0, 10),
-                        time: '03:30 PM',
+                        date: todayStr,
+                        time: nowTimeStr,
                         isProductive: true,
                         orderPlacedBDT: 0,
                         purpose: 'Regular Sales Visit',
                         feedback: 'Verified battery shelf presence and competitor pricing.',
-                        latitude: 23.8041,
-                        longitude: 90.3667,
+                        latitude: coords.lat,
+                        longitude: coords.lng,
                       });
-                      setBannerNotice(`📍 Check-in recorded at "${activeCustomer.name}" with live GPS.`);
+                      await postAuthenticatedMobileApi('/api/visits', {
+                        userId: safeProfile.userId,
+                        employeeId: safeProfile.employeeId,
+                        employeeCode: safeProfile.employeeCode,
+                        repId: safeProfile.employeeId,
+                        repName: safeProfile.name,
+                        customerId: activeCustomer.id,
+                        customerName: activeCustomer.name,
+                        date: todayStr,
+                        time: nowTimeStr,
+                        isProductive: true,
+                        orderPlacedBDT: 0,
+                        purpose: 'Regular Sales Visit',
+                        latitude: coords.lat,
+                        longitude: coords.lng,
+                      });
+                      setBannerNotice(`Check-in recorded by ${safeProfile.name} at "${activeCustomer.name}" (${coords.lat.toFixed(4)}, ${coords.lng.toFixed(4)}).`);
                     }}
                     className="p-4 rounded-2xl bg-white dark:bg-[#1e2026] border border-slate-200 dark:border-white/5 flex flex-col items-center justify-center gap-2 cursor-pointer hover:bg-slate-50 dark:hover:bg-[#252830] transition-colors group shadow-2xs"
                   >
@@ -1258,11 +1727,15 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
                 <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-100 dark:border-white/5 text-[11px]">
                   <div>
                     <span className="text-slate-500">Current Month Sales:</span>
-                    <div className="font-bold text-slate-900 dark:text-white">৳ 18,500</div>
+                    <div className="font-bold text-slate-900 dark:text-white">
+                      ৳ {mobileKpiSummary.customerCurrentMonthSales.toLocaleString()}
+                    </div>
                   </div>
                   <div>
                     <span className="text-slate-500">Last Month Sales:</span>
-                    <div className="font-bold text-slate-700 dark:text-slate-300">৳ 42,000</div>
+                    <div className="font-bold text-slate-700 dark:text-slate-300">
+                      ৳ {mobileKpiSummary.customerLastMonthSales.toLocaleString()}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1341,33 +1814,55 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
                 </div>
               </div>
 
-              {/* KPI Summary (Matches Screenshot 2 Bottom) */}
+              {/* Live User-Scoped KPI Summary */}
               <div className="p-3.5 rounded-2xl bg-white dark:bg-[#1e2026] border border-slate-200 dark:border-white/5 space-y-2 text-[11px] shadow-2xs">
-                <div className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Target vs Achievement</div>
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                    Target vs Achievement
+                  </span>
+                  <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400">
+                    {resolvedProfile.employeeCode}
+                  </span>
+                </div>
                 <div className="grid grid-cols-2 gap-2 text-slate-700 dark:text-slate-300">
                   <div className="flex justify-between">
-                    <span className="text-slate-500">Today's Order:</span>
-                    <span className="font-bold text-slate-900 dark:text-white">৳ 18,500</span>
+                    <span className="text-slate-500">Today&apos;s Order:</span>
+                    <span className="font-bold text-slate-900 dark:text-white">
+                      ৳ {mobileKpiSummary.todayOrderBDT.toLocaleString()}
+                    </span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-slate-500">Today's Invoice:</span>
-                    <span className="font-bold text-emerald-600 dark:text-emerald-400">৳ 14,200</span>
+                    <span className="text-slate-500">Today&apos;s Invoice:</span>
+                    <span className="font-bold text-emerald-600 dark:text-emerald-400">
+                      ৳ {mobileKpiSummary.todayInvoiceBDT.toLocaleString()}
+                    </span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-slate-500">Target:</span>
-                    <span className="font-bold text-slate-900 dark:text-white">৳ 60,000</span>
+                    <span className="font-bold text-slate-900 dark:text-white">
+                      ৳ {mobileKpiSummary.monthlyTargetBDT.toLocaleString()}
+                    </span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-slate-500">Achievement:</span>
-                    <span className="font-bold text-amber-600 dark:text-amber-400">৳ 41,200</span>
+                    <span className="font-bold text-amber-600 dark:text-amber-400">
+                      ৳ {mobileKpiSummary.effectiveAchieved.toLocaleString()}
+                    </span>
                   </div>
                 </div>
                 <div className="w-full bg-slate-200 dark:bg-white/10 rounded-full h-1.5 overflow-hidden">
-                  <div className="bg-gradient-to-r from-amber-500 to-emerald-500 h-full w-[68%] rounded-full"></div>
+                  <div
+                    className="bg-gradient-to-r from-amber-500 to-emerald-500 h-full rounded-full transition-all"
+                    style={{ width: `${Math.min(100, Math.max(0, Math.round(mobileKpiSummary.achievePercent)))}%` }}
+                  ></div>
                 </div>
                 <div className="flex justify-between text-[10px] text-slate-500 dark:text-slate-400">
-                  <span>Achieve %: <b className="text-slate-900 dark:text-white">68.6%</b></span>
-                  <span>RR (Run Rate): <b className="text-slate-900 dark:text-white">1.15</b></span>
+                  <span>
+                    Achieve %: <b className="text-slate-900 dark:text-white">{mobileKpiSummary.achievePercent.toFixed(1)}%</b>
+                  </span>
+                  <span>
+                    RR (Run Rate): <b className="text-slate-900 dark:text-white">{mobileKpiSummary.runRateRatio.toFixed(2)}</b>
+                  </span>
                 </div>
               </div>
             </div>
@@ -1891,7 +2386,7 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
                   <option value="Brand Wise Order Vs Invoice">Brand Wise Order Vs Invoice</option>
                   <option value="Category Wise Order Vs Invoice">Category Wise Order Vs Invoice</option>
                   <option value="Present Stock">Present Stock</option>
-                  <option value="SPO & Category Wise KPI">SPO & Category Wise KPI</option>
+                  <option value="SPO & Category Wise KPI">{resolvedProfile.assignedRole} & Category Wise KPI</option>
                   <option value="Not Ordered Customer">Not Ordered Customer</option>
                   <option value="Outlet And SKU Wise Sales">Outlet And SKU Wise Sales</option>
                 </select>
@@ -1921,9 +2416,13 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
                     className="p-1.5 rounded-lg bg-black/40 border border-white/10 text-white text-[11px]"
                   >
                     <option value="All">All Brands</option>
-                    <option value="Ensec LiFePO4">Ensec LiFePO4</option>
-                    <option value="SolarPro Series">SolarPro Series</option>
-                    <option value="EcoPower EV">EcoPower EV</option>
+                    {productBrands
+                      .filter((b) => b !== 'All')
+                      .map((b) => (
+                        <option key={b} value={b}>
+                          {b}
+                        </option>
+                      ))}
                   </select>
 
                   <select
@@ -1939,11 +2438,15 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
                 </div>
               </div>
 
-              {/* REPORT DATA TABLES (Matches Image 3 Screen Tables) */}
+              {/* REPORT DATA TABLES (User-scoped from active ERP session) */}
               <div className="rounded-2xl bg-[#1e2026] border border-white/5 overflow-hidden text-xs">
                 <div className="p-2.5 bg-white/5 font-bold text-amber-400 text-xs border-b border-white/5 flex items-center justify-between">
-                  <span>{selectedReportType}</span>
-                  <span className="text-[10px] text-slate-400">Oct 2026</span>
+                  <span>
+                    {selectedReportType === 'SPO & Category Wise KPI'
+                      ? `${resolvedProfile.assignedRole} & Category Wise KPI`
+                      : selectedReportType}
+                  </span>
+                  <span className="text-[10px] text-slate-400">{resolvedProfile.name}</span>
                 </div>
 
                 {/* Table for Brand Wise Order Vs Invoice */}
@@ -1960,40 +2463,46 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-white/5">
-                        <tr>
-                          <td className="p-2 font-medium text-white">Ensec LiFePO4</td>
-                          <td className="p-2 text-right text-slate-300">14</td>
-                          <td className="p-2 text-right text-white font-mono">1,85,400</td>
-                          <td className="p-2 text-right text-slate-300">18</td>
-                          <td className="p-2 text-right text-emerald-400 font-mono">1,62,500</td>
-                        </tr>
-                        <tr>
-                          <td className="p-2 font-medium text-white">SolarPro Series</td>
-                          <td className="p-2 text-right text-slate-300">8</td>
-                          <td className="p-2 text-right text-white font-mono">94,200</td>
-                          <td className="p-2 text-right text-slate-300">10</td>
-                          <td className="p-2 text-right text-emerald-400 font-mono">82,000</td>
-                        </tr>
-                        <tr>
-                          <td className="p-2 font-medium text-white">EcoPower EV</td>
-                          <td className="p-2 text-right text-slate-300">5</td>
-                          <td className="p-2 text-right text-white font-mono">68,000</td>
-                          <td className="p-2 text-right text-slate-300">6</td>
-                          <td className="p-2 text-right text-emerald-400 font-mono">59,500</td>
-                        </tr>
-                        <tr className="bg-amber-500/10 font-bold text-amber-300 border-t border-amber-500/30">
-                          <td className="p-2">Total</td>
-                          <td className="p-2 text-right">27</td>
-                          <td className="p-2 text-right font-mono">3,47,600</td>
-                          <td className="p-2 text-right">34</td>
-                          <td className="p-2 text-right font-mono">3,04,000</td>
-                        </tr>
+                        {liveMobileReports.brandRows.length === 0 ? (
+                          <tr>
+                            <td colSpan={5} className="p-4 text-center text-slate-400">
+                              No orders recorded for {resolvedProfile.name} in this date range.
+                            </td>
+                          </tr>
+                        ) : (
+                          <>
+                            {liveMobileReports.brandRows.map((row) => (
+                              <tr key={row.brand}>
+                                <td className="p-2 font-medium text-white">{row.brand}</td>
+                                <td className="p-2 text-right text-slate-300">{row.pcSet.size}</td>
+                                <td className="p-2 text-right text-white font-mono">{row.orderAmt.toLocaleString()}</td>
+                                <td className="p-2 text-right text-slate-300">{row.ecSet.size}</td>
+                                <td className="p-2 text-right text-emerald-400 font-mono">{row.salesAmt.toLocaleString()}</td>
+                              </tr>
+                            ))}
+                            <tr className="bg-amber-500/10 font-bold text-amber-300 border-t border-amber-500/30">
+                              <td className="p-2">Total</td>
+                              <td className="p-2 text-right">
+                                {liveMobileReports.brandRows.reduce((s, r) => s + r.pcSet.size, 0)}
+                              </td>
+                              <td className="p-2 text-right font-mono">
+                                {liveMobileReports.brandRows.reduce((s, r) => s + r.orderAmt, 0).toLocaleString()}
+                              </td>
+                              <td className="p-2 text-right">
+                                {liveMobileReports.brandRows.reduce((s, r) => s + r.ecSet.size, 0)}
+                              </td>
+                              <td className="p-2 text-right font-mono">
+                                {liveMobileReports.brandRows.reduce((s, r) => s + r.salesAmt, 0).toLocaleString()}
+                              </td>
+                            </tr>
+                          </>
+                        )}
                       </tbody>
                     </table>
                   </div>
                 )}
 
-                {/* Table for SPO & Category Wise KPI */}
+                {/* Table for Role & Category Wise KPI */}
                 {selectedReportType === 'SPO & Category Wise KPI' && (
                   <div className="overflow-x-auto">
                     <table className="w-full text-left whitespace-nowrap text-[11px]">
@@ -2007,34 +2516,38 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-white/5">
-                        <tr>
-                          <td className="p-2 font-medium text-white">LiFePO4 Home</td>
-                          <td className="p-2 text-right font-mono">1,20,000</td>
-                          <td className="p-2 text-right text-emerald-400 font-mono">92,500</td>
-                          <td className="p-2 text-right">77.1%</td>
-                          <td className="p-2 text-right font-mono">1,150</td>
-                        </tr>
-                        <tr>
-                          <td className="p-2 font-medium text-white">Solar Storage</td>
-                          <td className="p-2 text-right font-mono">80,000</td>
-                          <td className="p-2 text-right text-emerald-400 font-mono">61,000</td>
-                          <td className="p-2 text-right">76.2%</td>
-                          <td className="p-2 text-right font-mono">890</td>
-                        </tr>
-                        <tr>
-                          <td className="p-2 font-medium text-white">Commercial Telecom</td>
-                          <td className="p-2 text-right font-mono">1,50,000</td>
-                          <td className="p-2 text-right text-emerald-400 font-mono">1,12,000</td>
-                          <td className="p-2 text-right">74.6%</td>
-                          <td className="p-2 text-right font-mono">1,420</td>
-                        </tr>
-                        <tr className="bg-amber-500/10 font-bold text-amber-300 border-t border-amber-500/30">
-                          <td className="p-2">Total</td>
-                          <td className="p-2 text-right font-mono">3,50,000</td>
-                          <td className="p-2 text-right font-mono">2,65,500</td>
-                          <td className="p-2 text-right">75.8%</td>
-                          <td className="p-2 text-right font-mono">3,460</td>
-                        </tr>
+                        {liveMobileReports.categoryRows.length === 0 ? (
+                          <tr>
+                            <td colSpan={5} className="p-4 text-center text-slate-400">
+                              No sales data recorded yet for {resolvedProfile.name} in this period.
+                            </td>
+                          </tr>
+                        ) : (
+                          <>
+                            {liveMobileReports.categoryRows.map((row) => (
+                              <tr key={row.category}>
+                                <td className="p-2 font-medium text-white">{row.category}</td>
+                                <td className="p-2 text-right font-mono">{row.targetAmt.toLocaleString()}</td>
+                                <td className="p-2 text-right text-emerald-400 font-mono">{row.invoiceAmt.toLocaleString()}</td>
+                                <td className="p-2 text-right">{row.achPer.toFixed(1)}%</td>
+                                <td className="p-2 text-right font-mono">{row.rrAmt.toLocaleString()}</td>
+                              </tr>
+                            ))}
+                            <tr className="bg-amber-500/10 font-bold text-amber-300 border-t border-amber-500/30">
+                              <td className="p-2">Total</td>
+                              <td className="p-2 text-right font-mono">
+                                {liveMobileReports.categoryRows.reduce((s, r) => s + r.targetAmt, 0).toLocaleString()}
+                              </td>
+                              <td className="p-2 text-right font-mono">
+                                {liveMobileReports.categoryRows.reduce((s, r) => s + r.invoiceAmt, 0).toLocaleString()}
+                              </td>
+                              <td className="p-2 text-right">{mobileKpiSummary.achievePercent.toFixed(1)}%</td>
+                              <td className="p-2 text-right font-mono">
+                                {liveMobileReports.categoryRows.reduce((s, r) => s + r.rrAmt, 0).toLocaleString()}
+                              </td>
+                            </tr>
+                          </>
+                        )}
                       </tbody>
                     </table>
                   </div>
@@ -2054,34 +2567,40 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-white/5">
-                        <tr>
-                          <td className="p-2 font-medium text-white">Ensec LiFePO4 12V 100Ah</td>
-                          <td className="p-2 text-center">12</td>
-                          <td className="p-2 text-center">10</td>
-                          <td className="p-2 text-right font-bold text-amber-400 font-mono">15</td>
-                          <td className="p-2 text-right font-bold text-emerald-400 font-mono">14</td>
-                        </tr>
-                        <tr>
-                          <td className="p-2 font-medium text-white">Ensec LiFePO4 24V 200Ah</td>
-                          <td className="p-2 text-center">7</td>
-                          <td className="p-2 text-center">6</td>
-                          <td className="p-2 text-right font-bold text-amber-400 font-mono">8</td>
-                          <td className="p-2 text-right font-bold text-emerald-400 font-mono">8</td>
-                        </tr>
-                        <tr>
-                          <td className="p-2 font-medium text-white">SolarPro 48V 100Ah Rack</td>
-                          <td className="p-2 text-center">5</td>
-                          <td className="p-2 text-center">4</td>
-                          <td className="p-2 text-right font-bold text-amber-400 font-mono">5</td>
-                          <td className="p-2 text-right font-bold text-emerald-400 font-mono">4</td>
-                        </tr>
-                        <tr className="bg-amber-500/10 font-bold text-amber-300 border-t border-amber-500/30">
-                          <td className="p-2">Total</td>
-                          <td className="p-2 text-center">24</td>
-                          <td className="p-2 text-center">20</td>
-                          <td className="p-2 text-right font-mono">28</td>
-                          <td className="p-2 text-right font-mono">26</td>
-                        </tr>
+                        {liveMobileReports.productRows.length === 0 ? (
+                          <tr>
+                            <td colSpan={5} className="p-4 text-center text-slate-400">
+                              No product orders recorded for {resolvedProfile.name} in this period.
+                            </td>
+                          </tr>
+                        ) : (
+                          <>
+                            {liveMobileReports.productRows.map((row) => (
+                              <tr key={row.name}>
+                                <td className="p-2 font-medium text-white">{row.name}</td>
+                                <td className="p-2 text-center">{row.ec}</td>
+                                <td className="p-2 text-center">{row.pc}</td>
+                                <td className="p-2 text-right font-bold text-amber-400 font-mono">{row.orderQty}</td>
+                                <td className="p-2 text-right font-bold text-emerald-400 font-mono">{row.invoiceQty}</td>
+                              </tr>
+                            ))}
+                            <tr className="bg-amber-500/10 font-bold text-amber-300 border-t border-amber-500/30">
+                              <td className="p-2">Total</td>
+                              <td className="p-2 text-center">
+                                {liveMobileReports.productRows.reduce((s, r) => s + r.ec, 0)}
+                              </td>
+                              <td className="p-2 text-center">
+                                {liveMobileReports.productRows.reduce((s, r) => s + r.pc, 0)}
+                              </td>
+                              <td className="p-2 text-right font-mono">
+                                {liveMobileReports.productRows.reduce((s, r) => s + r.orderQty, 0)}
+                              </td>
+                              <td className="p-2 text-right font-mono">
+                                {liveMobileReports.productRows.reduce((s, r) => s + r.invoiceQty, 0)}
+                              </td>
+                            </tr>
+                          </>
+                        )}
                       </tbody>
                     </table>
                   </div>
@@ -2192,7 +2711,10 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
                   </div>
                   <button
                     type="button"
-                    onClick={() => setNewCustGps('Lat: 23.8045, Lng: 90.3672 (Updated Live)')}
+                    onClick={async () => {
+                      const coords = await getBestAvailableCoords();
+                      setNewCustGps(`Lat: ${coords.lat.toFixed(5)}, Lng: ${coords.lng.toFixed(5)} (Live GPS Tagged)`);
+                    }}
                     className="p-1 px-2 rounded-lg bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold"
                   >
                     Re-Tag
@@ -2466,36 +2988,22 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
                 </button>
               </div>
 
-              {/* Employee Selector (if supervisor/admin testing multiple staff) */}
-              {fieldForceReps.length > 1 && (
-                <div className="p-2.5 rounded-xl bg-[#1e2026] border border-white/10">
-                  <label className="block text-[10px] font-semibold uppercase tracking-wider text-slate-400 mb-1">
-                    Active Employee Profile
-                  </label>
-                  <select
-                    value={attendanceEmployee.id}
-                    onChange={(e) => {
-                      setSelectedAttendanceRepId(e.target.value);
-                      setAttendanceResultAlert(null);
-                    }}
-                    className="w-full p-2 rounded-lg bg-black/40 border border-white/10 text-white text-xs font-medium"
-                  >
-                    {fieldForceReps.map((rep) => (
-                      <option key={rep.id} value={rep.id}>
-                        {rep.name} ({rep.code}) — {rep.assignedOfficeName || 'Head Office'}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-
-              {/* Employee & Assigned Office Info Card */}
+              {/* Authenticated Employee Profile & Assigned Office Info Card */}
               <div className="p-3.5 rounded-2xl bg-[#1e2026] border border-white/10 space-y-2.5 text-xs">
+                <div className="flex items-center justify-between gap-2 pb-1.5 border-b border-white/10 text-[10px]">
+                  <span className="uppercase tracking-wider font-semibold text-emerald-400 flex items-center gap-1">
+                    <ShieldCheck className="w-3.5 h-3.5" />
+                    <span>Authenticated ERP Session Identity</span>
+                  </span>
+                  <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 font-bold">
+                    {resolvedProfile.assignedRole}
+                  </span>
+                </div>
                 <div className="flex items-start justify-between gap-2">
                   <div>
                     <div className="text-sm font-bold text-white">{attendanceEmployee.name}</div>
                     <div className="text-[11px] font-mono text-blue-400">
-                      ID: {attendanceEmployee.code} • {attendanceEmployee.department || 'Operations'}
+                      ID: {resolvedProfile.employeeCode} • {resolvedProfile.designation}
                     </div>
                   </div>
                   <div className="text-right">
@@ -2763,22 +3271,36 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
 
                 <button
                   type="button"
-                  onClick={() => {
+                  onClick={async () => {
                     const start = todayDateISO;
                     const endObj = new Date(Date.now() + Math.max(0, leaveDays - 1) * 86400000);
+                    const endDate = endObj.toISOString().slice(0, 10);
                     applyLeave({
-                      employeeId: attendanceEmployee.id,
-                      employeeCode: attendanceEmployee.code,
-                      employeeName: attendanceEmployee.name,
-                      department: attendanceEmployee.department || 'Sales',
+                      userId: safeProfile.userId,
+                      employeeId: safeProfile.employeeId,
+                      employeeCode: safeProfile.employeeCode,
+                      employeeName: safeProfile.name,
+                      department: safeProfile.department || 'Operations',
                       leaveType,
                       startDate: start,
-                      endDate: endObj.toISOString().slice(0, 10),
+                      endDate,
+                      daysCount: leaveDays,
+                      reason: leaveReason || 'Submitted via Mobile Portal',
+                    });
+                    await postAuthenticatedMobileApi('/api/leaves', {
+                      userId: safeProfile.userId,
+                      employeeId: safeProfile.employeeId,
+                      employeeCode: safeProfile.employeeCode,
+                      employeeName: safeProfile.name,
+                      department: safeProfile.department || 'Operations',
+                      leaveType,
+                      startDate: start,
+                      endDate,
                       daysCount: leaveDays,
                       reason: leaveReason || 'Submitted via Mobile Portal',
                     });
                     setLeaveReason('');
-                    setBannerNotice(`Leave Application (${leaveType} - ${leaveDays} days) submitted for approval.`);
+                    setBannerNotice(`Leave Application (${leaveType} - ${leaveDays} days) submitted under ${safeProfile.name}.`);
                     setActiveTab('home');
                   }}
                   className="w-full py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs"
@@ -3015,7 +3537,9 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
                 {/* Rep Assignment Tag */}
                 <div className="p-2.5 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/5 flex items-center justify-between text-[11px] text-slate-600 dark:text-slate-400">
                   <span>Assigned Field Officer:</span>
-                  <span className="font-bold text-slate-900 dark:text-white">{defaultRep.name} (SPO)</span>
+                  <span className="font-bold text-slate-900 dark:text-white">
+                    {resolvedProfile.name} ({resolvedProfile.assignedRole} • ID: {resolvedProfile.employeeCode})
+                  </span>
                 </div>
 
                 {/* Submit and Cancel Buttons */}

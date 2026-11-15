@@ -184,7 +184,7 @@ export function moduleToPathname(module: string): string {
 }
 
 function MainApp() {
-  const { currentUser, currentUserHasPermission, isAuthenticated, productionOrders } = useERP();
+  const { currentUser, currentUserHasPermission, isAuthenticated, logout, productionOrders } = useERP();
 
   // Initialize activeModule from current browser pathname so F5 refresh preserves route!
   const [activeModule, setActiveModule] = useState<string>(() => {
@@ -228,18 +228,32 @@ function MainApp() {
     return () => window.removeEventListener('ensec-navigate', handleNavigate);
   }, [navigateTo]);
 
+  const hasValidActiveSession =
+    isAuthenticated &&
+    Boolean(currentUser?.id) &&
+    currentUser.id !== 'guest' &&
+    currentUser.status !== 'Blocked' &&
+    currentUser.status !== 'Inactive';
+
   // Sync initial URL if loaded on root '/'
   useEffect(() => {
-    if (typeof window !== 'undefined' && isAuthenticated) {
+    if (typeof window !== 'undefined' && hasValidActiveSession) {
       if (window.location.pathname === '/' || window.location.pathname === '') {
         const canonical = moduleToPathname(activeModule);
         window.history.replaceState({ module: activeModule }, '', canonical);
       }
     }
-  }, [isAuthenticated, activeModule]);
+  }, [hasValidActiveSession, activeModule]);
+
+  // If session was invalidated/blocked while open, ensure clean logout state
+  useEffect(() => {
+    if (isAuthenticated && !hasValidActiveSession) {
+      logout();
+    }
+  }, [isAuthenticated, hasValidActiveSession, logout]);
 
   // If not authenticated, render Login Page and preserve intended destination
-  if (!isAuthenticated) {
+  if (!hasValidActiveSession) {
     if (typeof window !== 'undefined' && window.location.pathname !== '/login' && window.location.pathname !== '/') {
       try {
         sessionStorage.setItem('ensec_intended_route', window.location.pathname);

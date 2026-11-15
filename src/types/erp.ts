@@ -214,6 +214,7 @@ export interface User {
   avatar?: string;
   isSalesman?: boolean;
   salesmanCode?: string;
+  employeeId?: string;
   salesTargetBDT?: number;
   monthlySalesTargetBDT?: number;
   permissions?: UserPermissions;
@@ -1283,6 +1284,9 @@ export interface FieldForceRep {
 
 export interface VisitLog {
   id: string;
+  userId?: string;
+  employeeId?: string;
+  employeeCode?: string;
   repId: string;
   repName: string;
   customerId: string;
@@ -1373,6 +1377,9 @@ export interface SalesOrder {
   distributorName?: string;
   customerId: string;
   customerName: string;
+  userId?: string;
+  employeeId?: string;
+  employeeCode?: string;
   salespersonId: string;
   salespersonName: string;
   warehouseId: string;
@@ -1562,12 +1569,14 @@ export type TADAStatus =
 
 export interface TADAEntry {
   id: string;
+  userId?: string;
   repId?: string;
   ffId?: string;
   repName?: string;
   ffCode?: string;
   ffName?: string;
   employeeId?: string;
+  employeeCode?: string;
   date?: string;
   tranDate?: string;
   fromLocation?: string;

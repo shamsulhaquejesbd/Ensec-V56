@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import http from 'http';
 import path from 'path';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import {
@@ -19,6 +20,12 @@ import type {
   OfficeLocation,
   RejectedAttendanceAttempt,
 } from './src/types/payroll.ts';
+import type { FieldForceRep } from './src/types/erp.ts';
+import {
+  resolveEmployeeForERPUser,
+  verifyTransactionIdentityMatchesUser,
+  type ResolvedMobileEmployeeProfile,
+} from './src/lib/fieldForceAuth.ts';
 import {
   authorizeCostSheetForUser,
   resolveManufacturingCostPermissions,
@@ -429,18 +436,78 @@ export function createAppServer() {
   });
 
   // --------------------------------------------------------------------------
-  // Authoritative Attendance Check-In (Backend + Haversine Validation)
+  // Authoritative Attendance Check-In (Authenticated ERP User + Geofence Validation)
   // --------------------------------------------------------------------------
   app.post('/api/attendance/check-in', async (req, res) => {
+    const caller = await resolveRequestUser(req);
+    if (!caller) {
+      return res.status(401).json({
+        accepted: false,
+        errorCode: 'UNAUTHORIZED',
+        reason: 'Authentication required. Please sign in to Ensec ERP before marking attendance.',
+      });
+    }
+
+    const resolvedEmployee = await resolveEmployeeProfileForCaller(caller);
+    if (!resolvedEmployee) {
+      return res.status(403).json({
+        accepted: false,
+        errorCode: 'EMPLOYEE_UNRESOLVED',
+        reason: 'Unable to resolve an active employee profile for this ERP user.',
+      });
+    }
+
     const body = req.body || {};
-    const employeeId = String(body.employeeId || '').trim();
-    const employeeName = String(body.employeeName || '').trim();
+    const isMobileSource =
+      req.headers['x-mobile-portal'] === 'true' || body.source === 'mobile-field';
+
+    if (isMobileSource || !['Super Admin', 'HR', 'Admin'].includes(String(caller.role || ''))) {
+      const identityCheck = verifyTransactionIdentityMatchesUser(
+        {
+          userId: body.userId,
+          employeeId: body.employeeId,
+          fieldForceId: body.fieldForceId,
+          employeeCode: body.employeeCode,
+          salespersonId: body.salespersonId,
+          assignedSalespersonId: body.assignedSalespersonId,
+          repId: body.repId,
+          ffCode: body.ffCode,
+          employee: body.employee && typeof body.employee === 'object' ? body.employee : undefined,
+        },
+        resolvedEmployee
+      );
+      if (!identityCheck.valid) {
+        return res.status(403).json({
+          accepted: false,
+          errorCode: 'IDENTITY_MISMATCH',
+          reason: identityCheck.reason,
+        });
+      }
+    }
+
+    const employeeId = isMobileSource
+      ? resolvedEmployee.employeeId
+      : String(body.employeeId || resolvedEmployee.employeeId).trim();
+    const employeeCode = isMobileSource
+      ? resolvedEmployee.employeeCode
+      : String(body.employeeCode || resolvedEmployee.employeeCode).trim();
+    const employeeName = isMobileSource
+      ? resolvedEmployee.name
+      : String(body.employeeName || resolvedEmployee.name).trim();
     if (!employeeId || !employeeName) {
       return res.status(400).json({
         accepted: false,
         reason: 'Employee ID and Employee Name are required.',
       });
     }
+
+    const bodyForOffice = {
+      ...body,
+      employeeId,
+      employeeCode,
+      employeeName,
+      assignedOfficeId: body.assignedOfficeId || resolvedEmployee.assignedOfficeId,
+    };
 
     const attendanceDate = String(body.date || getTodayDateString()).slice(0, 10);
     const checkInTime = String(body.checkInTime || getCurrentTimeHHmm());
@@ -457,7 +524,7 @@ export function createAppServer() {
       });
     }
 
-    const office = await resolveOfficeForEmployee(body);
+    const office = await resolveOfficeForEmployee(bodyForOffice);
     const empLat = Number(body.latitude);
     const empLng = Number(body.longitude);
     const gpsAccuracy =
@@ -537,13 +604,14 @@ export function createAppServer() {
     const nowIso = new Date().toISOString();
     const record: AttendanceRecord = {
       id: `att-${Date.now().toString().slice(-6)}-${Math.random().toString(36).slice(2, 5)}`,
+      userId: caller.id,
       fieldForceId: employeeId,
       employeeId,
-      employeeCode: body.employeeCode ? String(body.employeeCode) : undefined,
+      employeeCode: employeeCode || undefined,
       employeeName,
       employeeCategory: body.employeeCategory,
-      department: body.department ? String(body.department) : 'Operations',
-      designation: body.designation ? String(body.designation) : undefined,
+      department: body.department ? String(body.department) : resolvedEmployee.department || 'Operations',
+      designation: body.designation ? String(body.designation) : resolvedEmployee.designation,
       date: attendanceDate,
       status: shiftCalc.status,
       inTime: checkInTime,
@@ -566,7 +634,7 @@ export function createAppServer() {
       gpsValidationStatus: 'Accepted',
       validationReason: validation.reason,
       remarks: `GPS Check-In Accepted (${validation.distanceMeters}m from ${office.assignedOfficeName})`,
-      recordedBy: 'Mobile GPS Geofence',
+      recordedBy: caller.name || 'Mobile GPS Geofence',
       createdAt: nowIso,
       updatedAt: nowIso,
     };
@@ -584,12 +652,64 @@ export function createAppServer() {
   });
 
   // --------------------------------------------------------------------------
-  // Authoritative Attendance Check-Out (Independent GPS Validation)
+  // Authoritative Attendance Check-Out (Authenticated ERP User + GPS Validation)
   // --------------------------------------------------------------------------
   app.post('/api/attendance/check-out', async (req, res) => {
+    const caller = await resolveRequestUser(req);
+    if (!caller) {
+      return res.status(401).json({
+        accepted: false,
+        errorCode: 'UNAUTHORIZED',
+        reason: 'Authentication required. Please sign in to Ensec ERP before checking out.',
+      });
+    }
+
+    const resolvedEmployee = await resolveEmployeeProfileForCaller(caller);
+    if (!resolvedEmployee) {
+      return res.status(403).json({
+        accepted: false,
+        errorCode: 'EMPLOYEE_UNRESOLVED',
+        reason: 'Unable to resolve an active employee profile for this ERP user.',
+      });
+    }
+
     const body = req.body || {};
-    const employeeId = String(body.employeeId || '').trim();
-    const employeeName = String(body.employeeName || '').trim();
+    const isMobileSource =
+      req.headers['x-mobile-portal'] === 'true' || body.source === 'mobile-field';
+
+    if (isMobileSource || !['Super Admin', 'HR', 'Admin'].includes(String(caller.role || ''))) {
+      const identityCheck = verifyTransactionIdentityMatchesUser(
+        {
+          userId: body.userId,
+          employeeId: body.employeeId,
+          fieldForceId: body.fieldForceId,
+          employeeCode: body.employeeCode,
+          salespersonId: body.salespersonId,
+          assignedSalespersonId: body.assignedSalespersonId,
+          repId: body.repId,
+          ffCode: body.ffCode,
+          employee: body.employee && typeof body.employee === 'object' ? body.employee : undefined,
+        },
+        resolvedEmployee
+      );
+      if (!identityCheck.valid) {
+        return res.status(403).json({
+          accepted: false,
+          errorCode: 'IDENTITY_MISMATCH',
+          reason: identityCheck.reason,
+        });
+      }
+    }
+
+    const employeeId = isMobileSource
+      ? resolvedEmployee.employeeId
+      : String(body.employeeId || resolvedEmployee.employeeId).trim();
+    const employeeCode = isMobileSource
+      ? resolvedEmployee.employeeCode
+      : String(body.employeeCode || resolvedEmployee.employeeCode).trim();
+    const employeeName = isMobileSource
+      ? resolvedEmployee.name
+      : String(body.employeeName || resolvedEmployee.name).trim();
     if (!employeeId || !employeeName) {
       return res.status(400).json({
         accepted: false,
@@ -625,7 +745,13 @@ export function createAppServer() {
       });
     }
 
-    const office = await resolveOfficeForEmployee(body);
+    const office = await resolveOfficeForEmployee({
+      ...body,
+      employeeId,
+      employeeCode,
+      employeeName,
+      assignedOfficeId: body.assignedOfficeId || resolvedEmployee.assignedOfficeId,
+    });
     const empLat = Number(body.latitude);
     const empLng = Number(body.longitude);
     const gpsAccuracy =
@@ -755,20 +881,77 @@ export function createAppServer() {
   });
 
   // ============================================================================
-  // MANUFACTURING COST VISIBILITY & COST SHEET AUTHORIZATION API
+  // ERP AUTH SESSION, EMPLOYEE RESOLUTION & MANUFACTURING / MOBILE APIs
   // ============================================================================
+  const ERP_SESSION_SECRET =
+    process.env.ERP_SESSION_SECRET ||
+    crypto.createHash('sha256').update(`${SUPABASE_URL}:ensec-erp-session-key`).digest('hex');
+  const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+  const erpActiveSessions = new Map<string, { user: any; createdAt: number; expiresAt: number }>();
+  const revokedSessionTokens = new Set<string>();
+
   const mfgUsersCache = new Map<string, any>();
+  const fieldForceRepsCache = new Map<string, FieldForceRep>();
   const mfgOrdersCache = new Map<string, any>();
   const mfgIssuesCache = new Map<string, any>();
   const mfgRawMaterialsCache = new Map<string, any>();
   const mfgBatchesCache = new Map<string, any>();
+  const mobileTransactionsStore = {
+    orders: [] as any[],
+    customers: [] as any[],
+    tada: [] as any[],
+    warranty: [] as any[],
+    visits: [] as any[],
+    leaves: [] as any[],
+    crmLeads: [] as any[],
+  };
+
+  const signErpSessionToken = (user: any): string => {
+    const payload = {
+      uid: String(user.id),
+      code: String(user.userId || ''),
+      email: String(user.email || ''),
+      iat: Date.now(),
+      exp: Date.now() + SESSION_TTL_MS,
+      nonce: crypto.randomBytes(8).toString('hex'),
+    };
+    const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url');
+    const sig = crypto.createHmac('sha256', ERP_SESSION_SECRET).update(encoded).digest('base64url');
+    return `${encoded}.${sig}`;
+  };
+
+  const verifyErpSessionToken = (token?: string | null): { uid: string; code: string; email: string; exp: number } | null => {
+    if (!token || revokedSessionTokens.has(token)) return null;
+    const parts = token.split('.');
+    if (parts.length !== 2) return null;
+    const [encoded, sig] = parts;
+    const expectedSig = crypto.createHmac('sha256', ERP_SESSION_SECRET).update(encoded).digest('base64url');
+    try {
+      const a = Buffer.from(sig);
+      const b = Buffer.from(expectedSig);
+      if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+      const parsed = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
+      if (!parsed || !parsed.uid || (parsed.exp && Date.now() > Number(parsed.exp))) {
+        return null;
+      }
+      return parsed;
+    } catch {
+      return null;
+    }
+  };
 
   const indexUserInMfgCache = (u: any) => {
     if (!u || typeof u !== 'object') return;
     if (u.id) mfgUsersCache.set(String(u.id).toLowerCase(), u);
     if (u.userId) mfgUsersCache.set(String(u.userId).toLowerCase(), u);
     if (u.uid) mfgUsersCache.set(String(u.uid).toLowerCase(), u);
+    if (u.salesmanCode) mfgUsersCache.set(String(u.salesmanCode).toLowerCase(), u);
     if (u.email) mfgUsersCache.set(String(u.email).toLowerCase(), u);
+  };
+
+  const indexFieldForceRepInCache = (rep: any) => {
+    if (!rep || typeof rep !== 'object' || !rep.id) return;
+    fieldForceRepsCache.set(String(rep.id), rep as FieldForceRep);
   };
 
   const mapSupabaseUserRow = (row: any) => {
@@ -782,25 +965,74 @@ export function createAppServer() {
     }
     return {
       id: row.uid ? String(row.uid) : `u-sb-${row.id}`,
-      userId: row.uid || (row.email ? String(row.email).split('@')[0].toUpperCase() : `EMP-${row.id}`),
+      userId:
+        row.user_id ||
+        row.uid ||
+        (row.email ? String(row.email).split('@')[0].toUpperCase() : `EMP-${row.id}`),
       name: row.name || 'Staff User',
       email: row.email || '',
+      phone: row.phone || '',
       role: row.role || 'Field Force',
+      designation: row.designation || '',
       department: row.department || '',
+      region: row.region || '',
+      area: row.area || '',
+      territory: row.territory || '',
+      isSalesman: row.is_salesman,
+      salesmanCode: row.salesman_code || row.salesmancode || undefined,
+      monthlySalesTargetBDT: row.monthly_target_bdt || row.monthlysalestargetbdt,
       status: row.status || 'Active',
       permissions: parsedPermissions || {},
     };
   };
 
-  const resolveRequestUser = async (req: express.Request): Promise<any | null> => {
-    const hdrId = String(req.headers['x-user-id'] || req.query.userId || '').trim();
-    const hdrCode = String(req.headers['x-user-code'] || '').trim();
-    const hdrEmail = String(req.headers['x-user-email'] || req.query.userEmail || '').trim();
+  const mapSupabaseFieldForceRow = (row: any): FieldForceRep => ({
+    id: String(row.id),
+    userId: row.user_id ? String(row.user_id) : undefined,
+    code: row.code || '',
+    pin: row.pin || undefined,
+    name: row.name || '',
+    phone: row.phone || '',
+    email: row.email || undefined,
+    designation: row.designation || 'Territory Sales Officer',
+    fieldForceType: row.field_force_type || undefined,
+    department: row.department || undefined,
+    region: row.region || '',
+    area: row.area || '',
+    territory: row.territory || '',
+    branchWorkplace: row.branch_workplace || undefined,
+    tadaApproverId: row.tada_approver_id || undefined,
+    tadaApproverName: row.tada_approver_name || undefined,
+    monthlyTargetBDT: Number(row.monthly_target_bdt) || 0,
+    monthlyAchievedBDT: Number(row.monthly_achieved_bdt) || 0,
+    assignedOfficeId: row.assigned_office_id || undefined,
+    assignedOfficeName: row.assigned_office_name || row.branch_workplace || undefined,
+    officeLatitude:
+      row.office_latitude !== null && row.office_latitude !== undefined
+        ? Number(row.office_latitude)
+        : undefined,
+    officeLongitude:
+      row.office_longitude !== null && row.office_longitude !== undefined
+        ? Number(row.office_longitude)
+        : undefined,
+    allowedRadiusMeters: Number(row.allowed_radius_meters) || undefined,
+    officeAddress: row.office_address || undefined,
+    locationStatus: row.location_status === 'Inactive' ? 'Inactive' : 'Active',
+    shiftStartTime: row.shift_start_time || undefined,
+    shiftEndTime: row.shift_end_time || undefined,
+    gracePeriodMinutes:
+      row.grace_period_minutes !== null && row.grace_period_minutes !== undefined
+        ? Number(row.grace_period_minutes)
+        : undefined,
+    isActive: row.is_active !== false,
+    status: row.is_active === false ? 'Inactive' : 'Active',
+  });
 
-    if (!hdrId && !hdrCode && !hdrEmail) {
-      return null;
-    }
-
+  const lookupAuthoritativeUser = async (
+    hdrId: string,
+    hdrCode: string,
+    hdrEmail: string
+  ): Promise<any | null> => {
     // 1. Prefer authoritative Supabase users table when available
     if (serverSupabase) {
       try {
@@ -862,11 +1094,95 @@ export function createAppServer() {
     return null;
   };
 
-  app.post('/api/manufacturing/sync-state', (req, res) => {
+  const resolveRequestUser = async (req: express.Request): Promise<any | null> => {
+    const authHeader = String(req.headers['authorization'] || '').trim();
+    const bearerToken = authHeader.toLowerCase().startsWith('bearer ')
+      ? authHeader.slice(7).trim()
+      : '';
+    const sessionToken = String(req.headers['x-erp-session-token'] || bearerToken || '').trim();
+
+    if (sessionToken) {
+      if (revokedSessionTokens.has(sessionToken)) {
+        return null;
+      }
+      const tokenClaims = verifyErpSessionToken(sessionToken);
+      if (!tokenClaims) {
+        return null;
+      }
+      const storedSession = erpActiveSessions.get(sessionToken);
+      if (storedSession && Date.now() > storedSession.expiresAt) {
+        erpActiveSessions.delete(sessionToken);
+        return null;
+      }
+      const freshUser =
+        (await lookupAuthoritativeUser(tokenClaims.uid, tokenClaims.code, tokenClaims.email)) ||
+        storedSession?.user;
+      if (!freshUser || freshUser.status === 'Blocked' || freshUser.status === 'Inactive') {
+        return null;
+      }
+      return freshUser;
+    }
+
+    const hdrId = String(req.headers['x-user-id'] || req.query.userId || '').trim();
+    const hdrCode = String(req.headers['x-user-code'] || '').trim();
+    const hdrEmail = String(req.headers['x-user-email'] || req.query.userEmail || '').trim();
+
+    if (!hdrId && !hdrCode && !hdrEmail) {
+      return null;
+    }
+
+    const resolved = await lookupAuthoritativeUser(hdrId, hdrCode, hdrEmail);
+    if (!resolved || resolved.status === 'Blocked' || resolved.status === 'Inactive') {
+      return null;
+    }
+    return resolved;
+  };
+
+  const resolveEmployeeProfileForCaller = async (
+    caller: any
+  ): Promise<ResolvedMobileEmployeeProfile | null> => {
+    if (!caller) return null;
+    const mergedMap = new Map<string, FieldForceRep>(fieldForceRepsCache);
+
+    if (serverSupabase) {
+      try {
+        const { data } = await serverSupabase
+          .from('field_force_reps')
+          .select('*')
+          .order('id', { ascending: true });
+        if (Array.isArray(data)) {
+          for (const row of data) {
+            const mapped = mapSupabaseFieldForceRow(row);
+            const cached = mergedMap.get(mapped.id);
+            // Prefer cached richer client fields (like unsynced userId if column not yet migrated)
+            mergedMap.set(mapped.id, {
+              ...mapped,
+              ...(cached?.userId && !mapped.userId ? { userId: cached.userId } : {}),
+            });
+          }
+        }
+      } catch {
+        // Use in-memory cache fallback
+      }
+    }
+
+    return resolveEmployeeForERPUser(
+      caller,
+      Array.from(mergedMap.values()),
+      Array.from(officeLocationsStore.values())
+    );
+  };
+
+  const handleSyncContext = (req: express.Request, res: express.Response) => {
     const body = req.body || {};
     if (Array.isArray(body.users)) {
       for (const u of body.users) {
         indexUserInMfgCache(u);
+      }
+    }
+    if (Array.isArray(body.fieldForceReps)) {
+      for (const rep of body.fieldForceReps) {
+        indexFieldForceRepInCache(rep);
       }
     }
     if (Array.isArray(body.productionOrders)) {
@@ -898,6 +1214,154 @@ export function createAppServer() {
       }
     }
     res.json({ ok: true });
+  };
+
+  app.post('/api/manufacturing/sync-state', handleSyncContext);
+  app.post('/api/erp/sync-context', handleSyncContext);
+
+  app.post('/api/auth/session', async (req, res) => {
+    const body = req.body || {};
+    const suppliedUser = body.user;
+    if (!suppliedUser || !suppliedUser.id || suppliedUser.id === 'guest') {
+      return res.status(401).json({
+        authenticated: false,
+        error: 'Valid authenticated ERP user is required to establish a session.',
+      });
+    }
+
+    // Index supplied user snapshot into server cache, then verify against authoritative record if available
+    const sanitizedUser = {
+      ...suppliedUser,
+      password: '',
+    };
+    const dbUser = await lookupAuthoritativeUser(
+      String(suppliedUser.id || ''),
+      String(suppliedUser.userId || suppliedUser.salesmanCode || ''),
+      String(suppliedUser.email || '')
+    );
+
+    const authoritativeUser = dbUser
+      ? {
+          ...sanitizedUser,
+          ...dbUser,
+          password: '',
+        }
+      : sanitizedUser;
+
+    if (
+      suppliedUser.status === 'Blocked' ||
+      suppliedUser.status === 'Inactive' ||
+      authoritativeUser.status === 'Blocked' ||
+      authoritativeUser.status === 'Inactive'
+    ) {
+      return res.status(403).json({
+        authenticated: false,
+        error: `Account is currently ${
+          suppliedUser.status === 'Blocked' || suppliedUser.status === 'Inactive'
+            ? suppliedUser.status
+            : authoritativeUser.status
+        }.`,
+      });
+    }
+
+    indexUserInMfgCache(authoritativeUser);
+    if (Array.isArray(body.fieldForceReps)) {
+      for (const rep of body.fieldForceReps) {
+        indexFieldForceRepInCache(rep);
+      }
+    }
+    if (Array.isArray(body.officeLocations)) {
+      for (const loc of body.officeLocations) {
+        if (loc && loc.id && loc.name) {
+          officeLocationsStore.set(String(loc.id), {
+            id: String(loc.id),
+            code: loc.code,
+            name: String(loc.name),
+            address: String(loc.address || ''),
+            latitude: Number(loc.latitude),
+            longitude: Number(loc.longitude),
+            allowedRadiusMeters: Number(loc.allowedRadiusMeters) || DEFAULT_ALLOWED_RADIUS_METERS,
+            status: loc.status === 'Inactive' ? 'Inactive' : 'Active',
+          });
+        }
+      }
+    }
+    const token = signErpSessionToken(authoritativeUser);
+    const now = Date.now();
+    erpActiveSessions.set(token, {
+      user: authoritativeUser,
+      createdAt: now,
+      expiresAt: now + SESSION_TTL_MS,
+    });
+
+    const employee = await resolveEmployeeProfileForCaller(authoritativeUser);
+    return res.status(200).json({
+      authenticated: true,
+      token,
+      user: authoritativeUser,
+      employee,
+    });
+  });
+
+  app.get('/api/auth/me', async (req, res) => {
+    const caller = await resolveRequestUser(req);
+    if (!caller) {
+      return res.status(401).json({
+        authenticated: false,
+        error: 'Session expired or not authenticated.',
+      });
+    }
+    const employee = await resolveEmployeeProfileForCaller(caller);
+    return res.status(200).json({
+      authenticated: true,
+      user: { ...caller, password: '' },
+      employee,
+    });
+  });
+
+  app.post('/api/auth/logout', (req, res) => {
+    const authHeader = String(req.headers['authorization'] || '').trim();
+    const bearerToken = authHeader.toLowerCase().startsWith('bearer ')
+      ? authHeader.slice(7).trim()
+      : '';
+    const token = String(req.headers['x-erp-session-token'] || bearerToken || req.body?.token || '').trim();
+    if (token) {
+      erpActiveSessions.delete(token);
+      revokedSessionTokens.add(token);
+    }
+    res.json({ ok: true, loggedOut: true });
+  });
+
+  app.get('/api/mobile-field/me', async (req, res) => {
+    const caller = await resolveRequestUser(req);
+    if (!caller) {
+      return res.status(401).json({
+        authenticated: false,
+        error: 'Session expired or not authenticated. Please log into Ensec ERP.',
+      });
+    }
+    const employee = await resolveEmployeeProfileForCaller(caller);
+    if (!employee) {
+      return res.status(403).json({
+        authenticated: false,
+        error: 'No active employee profile could be resolved for this user.',
+      });
+    }
+    return res.status(200).json({
+      authenticated: true,
+      user: {
+        id: caller.id,
+        userId: caller.userId,
+        name: caller.name,
+        email: caller.email,
+        phone: caller.phone,
+        role: caller.role,
+        designation: caller.designation,
+        department: caller.department,
+        status: caller.status,
+      },
+      employee,
+    });
   });
 
   app.get('/api/manufacturing/permissions', async (req, res) => {
@@ -1188,11 +1652,180 @@ export function createAppServer() {
     });
   });
 
-  // Compatibility fallbacks for existing MobileSalesPortal calls
-  app.post('/api/orders', (_req, res) => res.json({ ok: true }));
-  app.post('/api/customers', (_req, res) => res.json({ ok: true }));
-  app.post('/api/tada', (_req, res) => res.json({ ok: true }));
-  app.post('/api/warranty', (_req, res) => res.json({ ok: true }));
+  // Authenticated Mobile Field Force Transaction Endpoints (Enforces active ERP User <-> Employee Identity)
+  const authorizeMobileTransaction = async (req: express.Request, res: express.Response) => {
+    const caller = await resolveRequestUser(req);
+    if (!caller) {
+      res.status(401).json({
+        ok: false,
+        errorCode: 'UNAUTHORIZED',
+        error: 'Authentication required. Please log in to Ensec ERP.',
+      });
+      return null;
+    }
+    const employee = await resolveEmployeeProfileForCaller(caller);
+    if (!employee) {
+      res.status(403).json({
+        ok: false,
+        errorCode: 'EMPLOYEE_UNRESOLVED',
+        error: 'No active employee profile found for authenticated ERP user.',
+      });
+      return null;
+    }
+    const body = req.body || {};
+    const identityCheck = verifyTransactionIdentityMatchesUser(
+      {
+        userId: body.userId,
+        employeeId: body.employeeId,
+        fieldForceId: body.fieldForceId,
+        employeeCode: body.employeeCode,
+        salespersonId: body.salespersonId,
+        assignedSalespersonId: body.assignedSalespersonId,
+        repId: body.repId,
+        ffCode: body.ffCode,
+        employee: body.employee && typeof body.employee === 'object' ? body.employee : undefined,
+      },
+      employee
+    );
+    if (!identityCheck.valid) {
+      res.status(403).json({
+        ok: false,
+        errorCode: 'IDENTITY_MISMATCH',
+        error: identityCheck.reason,
+      });
+      return null;
+    }
+    return { caller, employee, body };
+  };
+
+  app.post('/api/orders', async (req, res) => {
+    const auth = await authorizeMobileTransaction(req, res);
+    if (!auth) return;
+    const { caller, employee, body } = auth;
+    const record = {
+      ...body,
+      id: body.id || `so-srv-${Date.now()}`,
+      userId: caller.id,
+      userLoginId: caller.userId || employee.userLoginId,
+      employeeId: employee.employeeId,
+      employeeCode: employee.employeeCode,
+      salespersonId: employee.employeeId,
+      salespersonName: employee.name,
+      recordedAt: new Date().toISOString(),
+    };
+    mobileTransactionsStore.orders.unshift(record);
+    return res.status(200).json({ ok: true, order: record });
+  });
+
+  app.post('/api/customers', async (req, res) => {
+    const auth = await authorizeMobileTransaction(req, res);
+    if (!auth) return;
+    const { caller, employee, body } = auth;
+    const record = {
+      ...body,
+      id: body.id || `cust-srv-${Date.now()}`,
+      userId: caller.id,
+      employeeId: employee.employeeId,
+      employeeCode: employee.employeeCode,
+      assignedSalespersonId: employee.employeeId,
+      assignedSalespersonName: employee.name,
+      recordedAt: new Date().toISOString(),
+    };
+    mobileTransactionsStore.customers.unshift(record);
+    return res.status(200).json({ ok: true, customer: record });
+  });
+
+  app.post('/api/tada', async (req, res) => {
+    const auth = await authorizeMobileTransaction(req, res);
+    if (!auth) return;
+    const { caller, employee, body } = auth;
+    const record = {
+      ...body,
+      id: body.id || `tada-srv-${Date.now()}`,
+      userId: caller.id,
+      employeeId: employee.employeeId,
+      employeeCode: employee.employeeCode,
+      ffCode: employee.employeeCode,
+      ffName: employee.name,
+      repId: employee.employeeId,
+      repName: employee.name,
+      recordedAt: new Date().toISOString(),
+    };
+    mobileTransactionsStore.tada.unshift(record);
+    return res.status(200).json({ ok: true, tada: record });
+  });
+
+  app.post('/api/warranty', async (req, res) => {
+    const auth = await authorizeMobileTransaction(req, res);
+    if (!auth) return;
+    const { caller, employee, body } = auth;
+    const record = {
+      ...body,
+      id: body.id || `war-srv-${Date.now()}`,
+      userId: caller.id,
+      employeeId: employee.employeeId,
+      employeeCode: employee.employeeCode,
+      complaintReceivedBy: employee.name,
+      recordedAt: new Date().toISOString(),
+    };
+    mobileTransactionsStore.warranty.unshift(record);
+    return res.status(200).json({ ok: true, ticket: record });
+  });
+
+  app.post('/api/visits', async (req, res) => {
+    const auth = await authorizeMobileTransaction(req, res);
+    if (!auth) return;
+    const { caller, employee, body } = auth;
+    const record = {
+      ...body,
+      id: body.id || `visit-srv-${Date.now()}`,
+      userId: caller.id,
+      employeeId: employee.employeeId,
+      employeeCode: employee.employeeCode,
+      repId: employee.employeeId,
+      repName: employee.name,
+      recordedAt: new Date().toISOString(),
+    };
+    mobileTransactionsStore.visits.unshift(record);
+    return res.status(200).json({ ok: true, visit: record });
+  });
+
+  app.post('/api/leaves', async (req, res) => {
+    const auth = await authorizeMobileTransaction(req, res);
+    if (!auth) return;
+    const { caller, employee, body } = auth;
+    const record = {
+      ...body,
+      id: body.id || `leave-srv-${Date.now()}`,
+      userId: caller.id,
+      employeeId: employee.employeeId,
+      employeeCode: employee.employeeCode,
+      employeeName: employee.name,
+      department: employee.department,
+      recordedAt: new Date().toISOString(),
+    };
+    mobileTransactionsStore.leaves.unshift(record);
+    return res.status(200).json({ ok: true, leave: record });
+  });
+
+  app.post('/api/crm-leads', async (req, res) => {
+    const auth = await authorizeMobileTransaction(req, res);
+    if (!auth) return;
+    const { caller, employee, body } = auth;
+    const record = {
+      ...body,
+      id: body.id || `crm-srv-${Date.now()}`,
+      userId: caller.id,
+      employeeId: employee.employeeId,
+      employeeCode: employee.employeeCode,
+      salespersonId: employee.employeeId,
+      salespersonName: employee.name,
+      assignedRepName: employee.name,
+      recordedAt: new Date().toISOString(),
+    };
+    mobileTransactionsStore.crmLeads.unshift(record);
+    return res.status(200).json({ ok: true, lead: record });
+  });
 
   return app;
 }

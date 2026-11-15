@@ -142,6 +142,7 @@ export type GPSValidationStatus = 'Accepted' | 'Rejected' | 'Manual';
 
 export interface AttendanceRecord {
   id: string;
+  userId?: string;
   fieldForceId?: string;
   employeeId?: string;
   employeeCode?: string;
@@ -221,6 +222,7 @@ export interface RejectedAttendanceAttempt {
 export interface LeaveRecord {
   id: string;
   leaveApplicationNo?: string;
+  userId?: string;
   fieldForceId?: string;
   employeeId?: string;
   employeeCode?: string;

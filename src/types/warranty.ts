@@ -24,6 +24,9 @@ export interface WarrantyTicket {
   nominalVoltage?: number;
   complaintDate?: string;
   complaintReceivedBy?: string;
+  userId?: string;
+  employeeId?: string;
+  employeeCode?: string;
   complaintChannel?: string;
   reportedProblem?: string;
   problemCategory?: string;
