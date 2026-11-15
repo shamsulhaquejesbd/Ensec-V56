@@ -980,11 +980,11 @@ export const PageWisePermissionsEditor: React.FC<PageWisePermissionsEditorProps>
                                             <h6 className="text-xs font-extrabold text-slate-900 dark:text-white tracking-tight">
                                               {subTitle}
                                             </h6>
-                                            <p className="text-[10px] text-slate-500 dark:text-slate-400">
-                                              {subTitle === 'Excel Export and Upload BOM Visibility Permissions'
-                                                ? 'Independent ON/OFF controls for Export BOM and Upload BOM visibility across BOM Master and Configure BOM Master & Versioning.'
-                                                : 'Independent ON/OFF cost visibility & Cost Sheet controls. Off options are enforced across UI, URLs, and API responses.'}
-                                            </p>
+                                            {subTitle !== 'Excel Export and Upload BOM Visibility Permissions' && (
+                                              <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                                                Independent ON/OFF cost visibility &amp; Cost Sheet controls. Off options are enforced across UI, URLs, and API responses.
+                                              </p>
+                                            )}
                                           </div>
                                         </div>
                                         <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/50 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800 self-start sm:self-center">
