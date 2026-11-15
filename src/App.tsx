@@ -50,16 +50,13 @@ import { RawMaterialInventoryPage } from './components/inventory/RawMaterialInve
 import { WarrantyManagementModule } from './components/warranty/WarrantyManagementModule.tsx';
 import { LoginPage } from './components/auth/LoginPage.tsx';
 import { ProductionCostSheetModal } from './components/manufacturing/ProductionCostSheetModal.tsx';
+import { canViewManufacturingCostSheet } from './types/pagePermissions.ts';
 import {
-  canViewManufacturingCostSheet,
-  canViewManufacturingCostDashboard,
-  canPostFactoryExpense,
-  canApproveFactoryExpense,
-  canAllocateManufacturingOverhead,
-  canRollbackCostAllocation,
-  hasAnyManufacturingCostingAccess,
-} from './types/pagePermissions.ts';
-import { ShieldAlert, ArrowLeft, Menu } from 'lucide-react';
+  getFirstAccessibleModule,
+  isUserPermittedForModule,
+  resolvePostLoginModule,
+} from './lib/postLoginRedirect.ts';
+import { ShieldAlert, ArrowLeft, Menu, LogOut } from 'lucide-react';
 
 // Maps incoming browser URL pathname -> ERP activeModule ID
 export function pathnameToModule(pathname: string): string {
@@ -184,7 +181,7 @@ export function moduleToPathname(module: string): string {
 }
 
 function MainApp() {
-  const { currentUser, currentUserHasPermission, isAuthenticated, logout, productionOrders } = useERP();
+  const { currentUser, isAuthenticated, logout, productionOrders } = useERP();
 
   // Initialize activeModule from current browser pathname so F5 refresh preserves route!
   const [activeModule, setActiveModule] = useState<string>(() => {
@@ -235,15 +232,22 @@ function MainApp() {
     currentUser.status !== 'Blocked' &&
     currentUser.status !== 'Inactive';
 
-  // Sync initial URL if loaded on root '/'
+  const canAccessDashboard = isUserPermittedForModule(currentUser, 'dashboard');
+  const firstAccessibleModule = hasValidActiveSession ? getFirstAccessibleModule(currentUser) : null;
+
+  // On initial load at root '/' or '/login' with an active session, ensure landing module respects permissions
   useEffect(() => {
-    if (typeof window !== 'undefined' && hasValidActiveSession) {
-      if (window.location.pathname === '/' || window.location.pathname === '') {
-        const canonical = moduleToPathname(activeModule);
-        window.history.replaceState({ module: activeModule }, '', canonical);
+    if (typeof window === 'undefined' || !hasValidActiveSession) return;
+    const currentPath = window.location.pathname;
+    if (currentPath === '/' || currentPath === '' || currentPath === '/login') {
+      const targetModule = canAccessDashboard ? 'dashboard' : firstAccessibleModule || 'dashboard';
+      if (activeModule !== targetModule) {
+        setActiveModule(targetModule);
       }
+      const canonical = moduleToPathname(targetModule);
+      window.history.replaceState({ module: targetModule }, '', canonical);
     }
-  }, [hasValidActiveSession, activeModule]);
+  }, [hasValidActiveSession, canAccessDashboard, firstAccessibleModule, activeModule]);
 
   // If session was invalidated/blocked while open, ensure clean logout state
   useEffect(() => {
@@ -261,38 +265,27 @@ function MainApp() {
     }
     return (
       <LoginPage
-        onLoginSuccess={() => {
-          let target = 'dashboard';
+        onLoginSuccess={(loggedInUser) => {
+          let intendedModule: string | null = null;
           try {
             const intended = sessionStorage.getItem('ensec_intended_route');
             if (intended) {
               sessionStorage.removeItem('ensec_intended_route');
-              target = pathnameToModule(intended);
+              intendedModule = pathnameToModule(intended);
             } else if (window.location.pathname !== '/login' && window.location.pathname !== '/') {
-              target = pathnameToModule(window.location.pathname);
+              intendedModule = pathnameToModule(window.location.pathname);
             }
           } catch {}
-          navigateTo(target);
+          const authUser = loggedInUser || currentUser;
+          const target = resolvePostLoginModule(authUser, intendedModule);
+          navigateTo(target || 'dashboard');
         }}
       />
     );
   }
 
   const isModulePermitted =
-    currentUser.role === 'Super Admin' ||
-    (activeModule === 'manufacturing-cost-sheet'
-      ? canViewManufacturingCostSheet(currentUser)
-      : activeModule === 'manufacturing-costing'
-      ? hasAnyManufacturingCostingAccess(currentUser)
-      : activeModule === 'manufacturing-expenses'
-      ? canViewManufacturingCostDashboard(currentUser) ||
-        canPostFactoryExpense(currentUser) ||
-        canApproveFactoryExpense(currentUser)
-      : activeModule === 'manufacturing-allocations'
-      ? canViewManufacturingCostDashboard(currentUser) ||
-        canAllocateManufacturingOverhead(currentUser) ||
-        canRollbackCostAllocation(currentUser)
-      : currentUserHasPermission(activeModule));
+    currentUser.role === 'Super Admin' || isUserPermittedForModule(currentUser, activeModule);
 
   const isMobilePortal = activeModule === 'mobile-field';
 
@@ -331,7 +324,31 @@ function MainApp() {
               : 'lg:pl-[18.75rem] px-4 sm:px-6 py-4 overflow-y-auto slim-scrollbar'
           }`}
         >
-          {!isModulePermitted ? (
+          {!firstAccessibleModule ? (
+            <div className="p-8 max-w-md mx-auto mt-12 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-xl text-center space-y-4">
+              <div className="w-14 h-14 mx-auto rounded-2xl bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300 flex items-center justify-center">
+                <ShieldAlert className="w-7 h-7" />
+              </div>
+              <h2 className="text-base font-bold text-slate-900 dark:text-white">
+                No Module Access Assigned
+              </h2>
+              <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                You currently don&apos;t have access to any modules. Please contact your administrator.
+              </p>
+              <p className="text-[11px] text-slate-400">
+                Signed in as <b>{currentUser.name}</b> ({currentUser.role})
+              </p>
+              <div className="pt-2 flex items-center justify-center gap-2">
+                <button
+                  onClick={logout}
+                  className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 dark:bg-slate-700 dark:hover:bg-slate-600 text-white font-semibold text-xs flex items-center gap-1.5 shadow-sm cursor-pointer"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  <span>Sign Out</span>
+                </button>
+              </div>
+            </div>
+          ) : !isModulePermitted ? (
             <div className="p-8 max-w-md mx-auto mt-12 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-xl text-center space-y-4">
               <div className="w-14 h-14 mx-auto rounded-2xl bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300 flex items-center justify-center">
                 <ShieldAlert className="w-7 h-7" />
@@ -347,11 +364,11 @@ function MainApp() {
               </p>
               <div className="pt-2 flex items-center justify-center gap-2">
                 <button
-                  onClick={() => navigateTo('dashboard')}
-                  className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs flex items-center gap-1.5 shadow-sm"
+                  onClick={() => navigateTo(firstAccessibleModule || 'dashboard')}
+                  className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs flex items-center gap-1.5 shadow-sm cursor-pointer"
                 >
                   <ArrowLeft className="w-3.5 h-3.5" />
-                  <span>Return to Dashboard</span>
+                  <span>{canAccessDashboard ? 'Return to Dashboard' : 'Go to Authorized Page'}</span>
                 </button>
               </div>
             </div>
@@ -494,7 +511,7 @@ function MainApp() {
               {activeModule === 'field-tracker' && <FieldForceTrackerModule />}
               {activeModule === 'mobile-field' && (
                 <MobileSalesPortal
-                  onBackToERP={() => navigateTo('dashboard')}
+                  onBackToERP={() => navigateTo(firstAccessibleModule || 'dashboard')}
                   onOpenERPMenu={() => setSidebarOpen(true)}
                 />
               )}

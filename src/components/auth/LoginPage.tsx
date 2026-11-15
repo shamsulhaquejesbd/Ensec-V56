@@ -16,7 +16,7 @@ import { User, Role, getDefaultPermissionsForRole, resolveUserPermissions } from
 import { supabase, isSupabaseConfigured } from '../../lib/supabase.ts';
 
 export interface LoginPageProps {
-  onLoginSuccess?: () => void;
+  onLoginSuccess?: (user?: User) => void;
 }
 
 export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
@@ -182,7 +182,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
       setSuccessMessage(`Credentials verified. Welcome back, ${matchedUser.name}!`);
       setTimeout(() => {
         login(matchedUser);
-        onLoginSuccess?.();
+        onLoginSuccess?.(matchedUser);
       }, 250);
     } catch (err: any) {
       setErrorMessage(err.message || 'Authentication failed. Please verify credentials.');
@@ -260,7 +260,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
 
       setTimeout(() => {
         login(newUser);
-        onLoginSuccess?.();
+        onLoginSuccess?.(newUser);
       }, 400);
     } catch (err: any) {
       setErrorMessage(err.message || 'Failed to create user account.');
@@ -340,8 +340,9 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
         setTimeout(() => {
           setShowForgotModal(false);
           setIsResetting(false);
-          login({ ...targetUser, password: newPasswordVal.trim() });
-          onLoginSuccess?.();
+          const updatedUser = { ...targetUser, password: newPasswordVal.trim() };
+          login(updatedUser);
+          onLoginSuccess?.(updatedUser);
         }, 800);
       } catch (err: any) {
         setResetFeedback({ type: 'error', message: err.message || 'Failed to update password.' });
