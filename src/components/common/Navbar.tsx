@@ -15,6 +15,7 @@ import { useERP } from '../../context/ERPContext.tsx';
 import { ThemeToggle } from './ThemeToggle.tsx';
 import { Role } from '../../types/erp.ts';
 import { NotificationCenterDrawer } from './NotificationCenterDrawer.tsx';
+import { canViewCollectionNotification } from '../../types/pagePermissions.ts';
 
 interface NavbarProps {
   onToggleSidebar: () => void;
@@ -26,6 +27,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar, onNavigate, act
   const { currentUser, logout, setShowArchitectureModal, installmentNotifications } = useERP();
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showNotifDrawer, setShowNotifDrawer] = useState(false);
+  const canViewCollectionNotifications = canViewCollectionNotification(currentUser);
 
   const unreadNotifCount = installmentNotifications.filter((n) => !n.isRead).length;
 
@@ -68,18 +70,20 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar, onNavigate, act
         <ThemeToggle />
 
         {/* Collection Notification Bell */}
-        <button
-          onClick={() => setShowNotifDrawer(true)}
-          className="relative p-2 rounded-xl border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 transition-colors"
-          title="Collection Notifications & Overdue Alerts"
-        >
-          <Bell className="w-4 h-4" />
-          {unreadNotifCount > 0 && (
-            <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-rose-500 text-white text-[9px] font-black flex items-center justify-center animate-pulse">
-              {unreadNotifCount > 9 ? '9+' : unreadNotifCount}
-            </span>
-          )}
-        </button>
+        {canViewCollectionNotifications && (
+          <button
+            onClick={() => setShowNotifDrawer(true)}
+            className="relative p-2 rounded-xl border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 transition-colors"
+            title="Collection Notifications & Overdue Alerts"
+          >
+            <Bell className="w-4 h-4" />
+            {unreadNotifCount > 0 && (
+              <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-rose-500 text-white text-[9px] font-black flex items-center justify-center animate-pulse">
+                {unreadNotifCount > 9 ? '9+' : unreadNotifCount}
+              </span>
+            )}
+          </button>
+        )}
 
         {/* User / Role Switcher */}
         <div className="relative">
@@ -130,11 +134,13 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar, onNavigate, act
       </div>
 
       {/* Slide-out Collection Notification Center Drawer */}
-      <NotificationCenterDrawer
-        isOpen={showNotifDrawer}
-        onClose={() => setShowNotifDrawer(false)}
-        onNavigate={onNavigate}
-      />
+      {canViewCollectionNotifications && (
+        <NotificationCenterDrawer
+          isOpen={showNotifDrawer}
+          onClose={() => setShowNotifDrawer(false)}
+          onNavigate={onNavigate}
+        />
+      )}
     </header>
   );
 };

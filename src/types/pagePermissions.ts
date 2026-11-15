@@ -826,6 +826,13 @@ export const ERP_PAGE_PERMISSIONS_REGISTRY: ERPModuleCategory[] = [
           { key: 'log_followup', label: 'Log Customer Follow-up', description: 'Can enter visit feedback notes, promise dates, and calls' },
           { key: 'reschedule', label: 'Reschedule Overdue Plan', description: 'Can restructure past-due installment repayment terms' },
           { key: 'export', label: 'Export Collections', description: 'Can export recovery performance reports' },
+          {
+            key: 'view_collection_notification',
+            label: 'View Collection Notification',
+            description: 'Show the Collection Notifications bell button and notification drawer in the sidebar',
+            subsection: 'Collection Notification Visibility Permissions',
+            group: 'Sidebar Notification Visibility',
+          },
         ],
       },
       {
@@ -1215,6 +1222,7 @@ export const PERMISSION_TEMPLATES: PermissionTemplate[] = [
             act.key === 'view_distributor_price' ||
             act.key === 'view_retail_mrp' ||
             act.key === 'view_fg_specification' ||
+            act.key === 'view_collection_notification' ||
             act.key === 'view_valuation' ||
             act.key === 'view_revenue' ||
             act.key === 'export'
@@ -1511,6 +1519,12 @@ export function canViewFinishedProductSpecification(user: any): boolean {
   if (!user) return false;
   if (user.role === 'Super Admin') return true;
   return hasPageAction(user, 'basic-data-products', 'view_fg_specification');
+}
+
+export function canViewCollectionNotification(user: any): boolean {
+  if (!user) return false;
+  if (user.role === 'Super Admin') return true;
+  return hasPageAction(user, 'collection', 'view_collection_notification');
 }
 
 export function canViewManufacturingCostDashboard(user: any): boolean {

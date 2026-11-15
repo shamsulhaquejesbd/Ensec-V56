@@ -78,6 +78,7 @@ import {
 import { useERP } from '../../context/ERPContext.tsx';
 import { ThemeToggle } from './ThemeToggle.tsx';
 import { NotificationCenterDrawer } from './NotificationCenterDrawer.tsx';
+import { canViewCollectionNotification } from '../../types/pagePermissions.ts';
 
 interface SidebarProps {
   isOpen: boolean;
@@ -128,6 +129,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   } = useERP();
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showNotifDrawer, setShowNotifDrawer] = useState(false);
+  const canViewCollectionNotifications = canViewCollectionNotification(currentUser);
   const unreadNotifCount = (installmentNotifications || []).filter((n) => !n.isRead).length;
   // Keep all sidebar dropdown menus collapsed by default; open only upon user click
   const [dropdownsOpen, setDropdownsOpen] = useState<{ [id: string]: boolean }>({});
@@ -496,18 +498,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
             >
               <SlidersHorizontal className="w-3.5 h-3.5" />
             </button>
-            <button
-              onClick={() => setShowNotifDrawer(true)}
-              className="relative p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 transition-colors cursor-pointer"
-              title="Collection Notifications"
-            >
-              <Bell className="w-3.5 h-3.5" />
-              {unreadNotifCount > 0 && (
-                <span className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-rose-500 text-white text-[8px] font-black flex items-center justify-center animate-pulse">
-                  {unreadNotifCount > 9 ? '9+' : unreadNotifCount}
-                </span>
-              )}
-            </button>
+            {canViewCollectionNotifications && (
+              <button
+                onClick={() => setShowNotifDrawer(true)}
+                className="relative p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 transition-colors cursor-pointer"
+                title="Collection Notifications"
+              >
+                <Bell className="w-3.5 h-3.5" />
+                {unreadNotifCount > 0 && (
+                  <span className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-rose-500 text-white text-[8px] font-black flex items-center justify-center animate-pulse">
+                    {unreadNotifCount > 9 ? '9+' : unreadNotifCount}
+                  </span>
+                )}
+              </button>
+            )}
             <ThemeToggle size="sm" />
             <button
               onClick={onClose}
@@ -908,14 +912,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       )}
       {/* Notification Center Drawer */}
-      <NotificationCenterDrawer
-        isOpen={showNotifDrawer}
-        onClose={() => setShowNotifDrawer(false)}
-        onNavigate={(mod) => {
-          onSelectModule(mod);
-          setShowNotifDrawer(false);
-        }}
-      />
+      {canViewCollectionNotifications && (
+        <NotificationCenterDrawer
+          isOpen={showNotifDrawer}
+          onClose={() => setShowNotifDrawer(false)}
+          onNavigate={(mod) => {
+            onSelectModule(mod);
+            setShowNotifDrawer(false);
+          }}
+        />
+      )}
     </>
   );
 };
