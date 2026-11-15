@@ -138,6 +138,7 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
 
   // CRM Agreement Lead Registration State
   const [crmClientName, setCrmClientName] = useState<string>('');
+  const [crmAddress, setCrmAddress] = useState<string>('');
   const [crmContactPerson, setCrmContactPerson] = useState<string>('');
   const [crmPhone, setCrmPhone] = useState<string>('');
   const [crmEmail, setCrmEmail] = useState<string>('');
@@ -1300,6 +1301,7 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
       await addCRMLead({
         clientName: clientNameClean,
         companyName: clientNameClean,
+        address: crmAddress.trim() || undefined,
         contactPerson: crmContactPerson.trim() || undefined,
         phone: crmPhone.trim() || '+880 1700-000000',
         email: crmEmail.trim() || undefined,
@@ -1326,6 +1328,7 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
         salespersonId: safeProfile.employeeId,
         salespersonName: safeProfile.name,
         clientName: clientNameClean,
+        address: crmAddress.trim() || undefined,
         channel: crmChannel,
         stage: crmStage,
         expectedVolumeUnits: Number(crmExpectedVolume) || 10,
@@ -1334,6 +1337,7 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
 
       setBannerNotice(`CRM Agreement Lead "${clientNameClean}" registered under ${safeProfile.name} (${safeProfile.employeeCode}).`);
       setCrmClientName('');
+      setCrmAddress('');
       setCrmContactPerson('');
       setCrmPhone('');
       setCrmEmail('');
@@ -3360,6 +3364,20 @@ export const MobileSalesPortal: React.FC<MobileSalesPortalProps> = ({
                     value={crmClientName}
                     onChange={(e) => setCrmClientName(e.target.value)}
                     className="w-full p-2.5 rounded-xl bg-slate-50 dark:bg-black/40 border border-slate-300 dark:border-white/10 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-hidden focus:border-indigo-500 text-xs"
+                  />
+                </div>
+
+                {/* Client / Organization Address */}
+                <div>
+                  <label className="block text-slate-700 dark:text-slate-300 font-semibold mb-1">
+                    Client / Organization Address
+                  </label>
+                  <textarea
+                    rows={2}
+                    placeholder="e.g. House 14, Road 12, Banani, Dhaka 1213"
+                    value={crmAddress}
+                    onChange={(e) => setCrmAddress(e.target.value)}
+                    className="w-full p-2.5 rounded-xl bg-slate-50 dark:bg-black/40 border border-slate-300 dark:border-white/10 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-hidden focus:border-indigo-500 text-xs resize-none"
                   />
                 </div>
 
