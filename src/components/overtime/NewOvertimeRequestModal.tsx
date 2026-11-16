@@ -395,12 +395,11 @@ export const NewOvertimeRequestModal: React.FC<NewOvertimeRequestModalProps> = (
 
             <div className="space-y-1">
               <label className="text-slate-600 dark:text-slate-400 font-medium text-[11px]">
-                Project / Specific Work Purpose *
+                Project / Specific Work Purpose
               </label>
               <input
                 type="text"
-                required
-                placeholder="e.g. Nickel strip welding on 16S packs & BMS harness attachment"
+                placeholder="e.g. Nickel strip welding on 16S packs & BMS harness attachment (optional)"
                 value={projectPurpose}
                 onChange={(e) => setProjectPurpose(e.target.value)}
                 className="w-full py-1.5 px-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-medium"
@@ -464,12 +463,11 @@ export const NewOvertimeRequestModal: React.FC<NewOvertimeRequestModalProps> = (
           {/* Overtime Reason */}
           <div className="space-y-1">
             <label className="font-bold text-slate-700 dark:text-slate-300">
-              Reason for Overtime Requisition *
+              Reason for Overtime Requisition
             </label>
             <textarea
               rows={2}
-              required
-              placeholder="State production bottleneck, urgent dispatch requirements, or scheduled machine maintenance..."
+              placeholder="State production bottleneck, urgent dispatch requirements, or scheduled machine maintenance (optional)..."
               value={overtimeReason}
               onChange={(e) => setOvertimeReason(e.target.value)}
               className="w-full py-2 px-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white font-medium"

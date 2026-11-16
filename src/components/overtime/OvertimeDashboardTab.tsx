@@ -173,9 +173,7 @@ export const OvertimeDashboardTab: React.FC<OvertimeDashboardTabProps> = ({
               <h2 className="text-xl font-bold tracking-tight text-slate-900 dark:text-white">
                 Ensec Overtime Management &amp; Batch Costing
               </h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                Operational overtime tracking, factory attendance verification, and work order costing
-              </p>
+              
             </div>
           </div>
         </div>

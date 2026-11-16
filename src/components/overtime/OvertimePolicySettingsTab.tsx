@@ -179,13 +179,9 @@ export const OvertimePolicySettingsTab: React.FC = () => {
           <div>
             <h2 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
               <span>Employee-Specific Overtime Policy Directory</span>
-              <span className="text-[10px] bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 font-mono px-2 py-0.5 rounded-full uppercase tracking-wider font-semibold">
-                Individual Terms Active
-              </span>
+              
             </h2>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              Single global overtime policy has been removed. Overtime eligibility, divisors (e.g. 208h), calculation basis, and multipliers are configured individually per employee via Field Force Employee Master.
-            </p>
+            
           </div>
         </div>
 
