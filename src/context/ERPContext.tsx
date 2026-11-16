@@ -15325,101 +15325,140 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     setFieldForceReps((prev) => [newRep, ...prev]);
     addAuditLog('FIELD_FORCE_CREATED', 'Field Force Master', `Registered new field force officer: ${newRep.name} (${newRep.code})`);
+    const extractMissingFieldForceCol = (err: any): string | null => {
+      if (!err) return null;
+      const msg = String(err.message || '');
+      if (err.code === 'PGRST204' || msg.includes('schema cache')) {
+        const m = msg.match(/Could not find the '([^']+)' column/i);
+        if (m?.[1]) return m[1];
+      }
+      if (err.code === '42703' || msg.toLowerCase().includes('does not exist')) {
+        const quoted = msg.match(/column\s+"([^"]+)"/i);
+        if (quoted?.[1]) return quoted[1];
+        const qualified = msg.match(/column\s+(?:[a-zA-Z0-9_]+\.)?([a-zA-Z0-9_]+)/i);
+        if (qualified?.[1]) return qualified[1];
+      }
+      return null;
+    };
+
     const sb = getSupabase();
     if (sb) {
-      sb.from('field_force_reps')
-        .insert({
-          user_id: newRep.userId || null,
-          code: newRep.code,
-          name: newRep.name,
-          native_name: newRep.nativeName,
-          pin: newRep.pin,
-          phone: newRep.phone,
-          designation: newRep.designation,
-          field_force_type: newRep.fieldForceType,
-          department: newRep.department,
-          departments: newRep.departments || [],
-          region: newRep.region,
-          area: newRep.area,
-          territory: newRep.territory,
-          market_hierarchy: newRep.marketHierarchy,
-          distributor_name: newRep.distributorName,
-          monthly_target_bdt: newRep.monthlyTargetBDT,
-          monthly_achieved_bdt: newRep.monthlyAchievedBDT,
-          basic_salary_bdt: newRep.basicSalaryBDT,
-          conveyance_bdt: newRep.conveyanceBDT,
-          ta_da_bdt: newRep.taDaBDT,
-          mobile_allowance_bdt: newRep.mobileAllowanceBDT,
-          email: newRep.email,
-          parent_code: newRep.parentCode,
-          joining_date: newRep.joiningDate || null,
-          discontinue_date: newRep.discontinueDate || null,
-          invoice_within_days: newRep.invoiceWithinDays,
-          employee_category: newRep.employeeCategory,
-          employment_type: newRep.employmentType,
-          employment_status: newRep.employmentStatus,
-          present_address: newRep.presentAddress,
-          permanent_address: newRep.permanentAddress,
-          emergency_contact_name: newRep.emergencyContactName,
-          emergency_contact_phone: newRep.emergencyContactPhone,
-          emergency_contact_relation: newRep.emergencyContactRelation,
-          reporting_manager_id: newRep.reportingManagerId,
-          reporting_manager_name: newRep.reportingManagerName,
-          branch_workplace: newRep.branchWorkplace,
-          bank_name: newRep.bankName,
-          bank_account_number: newRep.bankAccountNumber,
-          bank_branch: newRep.bankBranch,
-          routing_number: newRep.routingNumber,
-          mobile_banking_provider: newRep.mobileBankingProvider,
-          mobile_banking_number: newRep.mobileBankingNumber,
-          national_id: newRep.nationalId,
-          tada_approver_id: newRep.tadaApproverId,
-          tada_approver_name: newRep.tadaApproverName,
-          current_location: newRep.currentLocation,
-          is_active: newRep.isActive !== false,
-          is_overtime_eligible: newRep.isOvertimeEligible !== undefined ? newRep.isOvertimeEligible : true,
-          overtime_calculation_basis: newRep.overtimeCalculationBasis || 'Basic Salary',
-          overtime_standard_hours: newRep.overtimeStandardMonthlyHours || 208,
-          overtime_multiplier: newRep.overtimeMultiplier || 2.0,
-          overtime_fixed_rate: newRep.overtimeFixedHourlyRateBDT || 0,
-          overtime_effective_from: newRep.overtimePolicyEffectiveFrom || newRep.joiningDate || null,
-          overtime_policy_status: newRep.overtimePolicyStatus || 'Active',
-          overtime_policy_notes: newRep.overtimePolicyNotes || null,
-          overtime_policy_history: newRep.overtimePolicyHistory || [],
-          assigned_office_id: newRep.assignedOfficeId || 'office-hq',
-          assigned_office_name: newRep.assignedOfficeName || 'Head Office (Gulshan HQ)',
-          office_latitude: newRep.officeLatitude ?? DEFAULT_OFFICE_LOCATIONS[0].latitude,
-          office_longitude: newRep.officeLongitude ?? DEFAULT_OFFICE_LOCATIONS[0].longitude,
-          allowed_radius_meters: newRep.allowedRadiusMeters ?? DEFAULT_ALLOWED_RADIUS_METERS,
-          office_address: newRep.officeAddress || DEFAULT_OFFICE_LOCATIONS[0].address,
-          location_status: newRep.locationStatus || 'Active',
-          shift_start_time: newRep.shiftStartTime || DEFAULT_SHIFT_START_TIME,
-          shift_end_time: newRep.shiftEndTime || DEFAULT_SHIFT_END_TIME,
-          grace_period_minutes: newRep.gracePeriodMinutes ?? DEFAULT_GRACE_PERIOD_MINUTES,
-        })
-        .then(({ error }) => {
-          if (error) {
-            console.error('Supabase field_force_reps insert failed:', error);
-            if (error.code === '42703') {
-              // Retry core columns only if SQL geofence migration is pending
-              sb.from('field_force_reps').insert({
-                code: newRep.code,
-                name: newRep.name,
-                phone: newRep.phone,
-                designation: newRep.designation,
-                field_force_type: newRep.fieldForceType,
-                department: newRep.department,
-                region: newRep.region,
-                area: newRep.area,
-                territory: newRep.territory,
-                email: newRep.email,
-                is_active: newRep.isActive !== false,
-              }).then(() => {});
-            } else {
-              setFieldForceReps((prev) => prev.filter((r) => r.id !== id));
-            }
+      const insertPayload: Record<string, any> = {
+        user_id: newRep.userId || null,
+        code: newRep.code,
+        name: newRep.name,
+        native_name: newRep.nativeName,
+        pin: newRep.pin,
+        phone: newRep.phone,
+        designation: newRep.designation,
+        field_force_type: newRep.fieldForceType,
+        department: newRep.department,
+        departments: newRep.departments || [],
+        region: newRep.region,
+        area: newRep.area,
+        territory: newRep.territory,
+        market_hierarchy: newRep.marketHierarchy,
+        distributor_name: newRep.distributorName,
+        monthly_target_bdt: newRep.monthlyTargetBDT,
+        monthly_achieved_bdt: newRep.monthlyAchievedBDT,
+        basic_salary_bdt: newRep.basicSalaryBDT,
+        conveyance_bdt: newRep.conveyanceBDT,
+        ta_da_bdt: newRep.taDaBDT,
+        mobile_allowance_bdt: newRep.mobileAllowanceBDT,
+        email: newRep.email,
+        parent_code: newRep.parentCode,
+        joining_date: newRep.joiningDate || null,
+        discontinue_date: newRep.discontinueDate || null,
+        invoice_within_days: newRep.invoiceWithinDays,
+        employee_category: newRep.employeeCategory,
+        employment_type: newRep.employmentType,
+        employment_status: newRep.employmentStatus,
+        present_address: newRep.presentAddress,
+        permanent_address: newRep.permanentAddress,
+        emergency_contact_name: newRep.emergencyContactName,
+        emergency_contact_phone: newRep.emergencyContactPhone,
+        emergency_contact_relation: newRep.emergencyContactRelation,
+        reporting_manager_id: newRep.reportingManagerId,
+        reporting_manager_name: newRep.reportingManagerName,
+        branch_workplace: newRep.branchWorkplace,
+        bank_name: newRep.bankName,
+        bank_account_number: newRep.bankAccountNumber,
+        bank_branch: newRep.bankBranch,
+        routing_number: newRep.routingNumber,
+        mobile_banking_provider: newRep.mobileBankingProvider,
+        mobile_banking_number: newRep.mobileBankingNumber,
+        national_id: newRep.nationalId,
+        tada_approver_id: newRep.tadaApproverId,
+        tada_approver_name: newRep.tadaApproverName,
+        current_location: newRep.currentLocation,
+        is_active: newRep.isActive !== false,
+        is_overtime_eligible: newRep.isOvertimeEligible !== undefined ? newRep.isOvertimeEligible : true,
+        overtime_calculation_basis: newRep.overtimeCalculationBasis || 'Basic Salary',
+        overtime_standard_hours: newRep.overtimeStandardMonthlyHours || 208,
+        overtime_multiplier: newRep.overtimeMultiplier || 2.0,
+        overtime_fixed_rate: newRep.overtimeFixedHourlyRateBDT || 0,
+        overtime_effective_from: newRep.overtimePolicyEffectiveFrom || newRep.joiningDate || null,
+        overtime_policy_status: newRep.overtimePolicyStatus || 'Active',
+        overtime_policy_notes: newRep.overtimePolicyNotes || null,
+        overtime_policy_history: newRep.overtimePolicyHistory || [],
+        assigned_office_id: newRep.assignedOfficeId || 'office-hq',
+        assigned_office_name: newRep.assignedOfficeName || 'Head Office (Gulshan HQ)',
+        office_latitude: newRep.officeLatitude ?? DEFAULT_OFFICE_LOCATIONS[0].latitude,
+        office_longitude: newRep.officeLongitude ?? DEFAULT_OFFICE_LOCATIONS[0].longitude,
+        allowed_radius_meters: newRep.allowedRadiusMeters ?? DEFAULT_ALLOWED_RADIUS_METERS,
+        office_address: newRep.officeAddress || DEFAULT_OFFICE_LOCATIONS[0].address,
+        location_status: newRep.locationStatus || 'Active',
+        shift_start_time: newRep.shiftStartTime || DEFAULT_SHIFT_START_TIME,
+        shift_end_time: newRep.shiftEndTime || DEFAULT_SHIFT_END_TIME,
+        grace_period_minutes: newRep.gracePeriodMinutes ?? DEFAULT_GRACE_PERIOD_MINUTES,
+      };
+
+      (async () => {
+        const payloadToInsert: Record<string, any> = { ...insertPayload };
+        const strippedCols: string[] = [];
+        let lastError: any = null;
+        let insertedRow: any = null;
+
+        for (let attempt = 0; attempt < 25; attempt++) {
+          const { data, error } = await sb
+            .from('field_force_reps')
+            .insert(payloadToInsert)
+            .select('id')
+            .single();
+
+          if (!error) {
+            insertedRow = data;
+            lastError = null;
+            break;
           }
-        });
+
+          lastError = error;
+          const missingCol = extractMissingFieldForceCol(error);
+          if (missingCol && Object.prototype.hasOwnProperty.call(payloadToInsert, missingCol)) {
+            delete payloadToInsert[missingCol];
+            strippedCols.push(missingCol);
+            continue;
+          }
+          break;
+        }
+
+        if (lastError) {
+          console.error('Supabase field_force_reps insert failed:', lastError);
+          setFieldForceReps((prev) => prev.filter((r) => r.id !== id));
+        } else {
+          if (strippedCols.length > 0) {
+            console.warn(
+              `Saved field_force_reps "${newRep.name}" after omitting pending DB columns: ${strippedCols.join(', ')}`
+            );
+          }
+          if (insertedRow?.id !== undefined && insertedRow?.id !== null) {
+            const dbId = String(insertedRow.id);
+            setFieldForceReps((prev) =>
+              prev.map((r) => (r.id === id ? { ...r, id: dbId } : r))
+            );
+          }
+        }
+      })();
     }
     return id;
   };
@@ -15510,25 +15549,30 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ? sb.from('field_force_reps').update(p).eq('id', Number(repId))
           : sb.from('field_force_reps').update(p).eq('code', target?.code || repId);
 
-      execUpdate(payload).then(({ error }) => {
-        if (error && error.code === '42703') {
-          const fallbackPayload = { ...payload };
-          delete fallbackPayload.user_id;
-          delete fallbackPayload.assigned_office_id;
-          delete fallbackPayload.assigned_office_name;
-          delete fallbackPayload.office_latitude;
-          delete fallbackPayload.office_longitude;
-          delete fallbackPayload.allowed_radius_meters;
-          delete fallbackPayload.office_address;
-          delete fallbackPayload.location_status;
-          delete fallbackPayload.shift_start_time;
-          delete fallbackPayload.shift_end_time;
-          delete fallbackPayload.grace_period_minutes;
-          if (Object.keys(fallbackPayload).length > 0) {
-            execUpdate(fallbackPayload).then(() => {});
+      (async () => {
+        const updatePayload: Record<string, any> = { ...payload };
+        for (let attempt = 0; attempt < 25; attempt++) {
+          if (Object.keys(updatePayload).length === 0) break;
+          const { error } = await execUpdate(updatePayload);
+          if (!error) break;
+          const msg = String(error.message || '');
+          let missingCol: string | null = null;
+          if (error.code === 'PGRST204' || msg.includes('schema cache')) {
+            missingCol = msg.match(/Could not find the '([^']+)' column/i)?.[1] || null;
+          } else if (error.code === '42703' || msg.toLowerCase().includes('does not exist')) {
+            missingCol =
+              msg.match(/column\s+"([^"]+)"/i)?.[1] ||
+              msg.match(/column\s+(?:[a-zA-Z0-9_]+\.)?([a-zA-Z0-9_]+)/i)?.[1] ||
+              null;
           }
+          if (missingCol && Object.prototype.hasOwnProperty.call(updatePayload, missingCol)) {
+            delete updatePayload[missingCol];
+            continue;
+          }
+          console.warn('Notice updating field_force_reps in Supabase:', error.message);
+          break;
         }
-      });
+      })();
     }
   };
 

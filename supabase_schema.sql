@@ -3073,7 +3073,12 @@ ALTER TABLE IF EXISTS public.field_force_reps
   ADD COLUMN IF NOT EXISTS mobile_banking_number TEXT,
   ADD COLUMN IF NOT EXISTS national_id TEXT,
   ADD COLUMN IF NOT EXISTS resignation_date DATE,
-  ADD COLUMN IF NOT EXISTS user_id TEXT;
+  ADD COLUMN IF NOT EXISTS user_id TEXT,
+  ADD COLUMN IF NOT EXISTS email TEXT,
+  ADD COLUMN IF NOT EXISTS parent_code TEXT,
+  ADD COLUMN IF NOT EXISTS invoice_within_days INT DEFAULT 3,
+  ADD COLUMN IF NOT EXISTS tada_approver_id TEXT,
+  ADD COLUMN IF NOT EXISTS tada_approver_name TEXT;
 
 -- 1. Employee Salary Structures Master
 CREATE TABLE IF NOT EXISTS public.employee_salary_structures (
