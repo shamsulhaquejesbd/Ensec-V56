@@ -86,6 +86,8 @@ const ACTION_TYPES = [
   'Corporate Key Accounts',
   'Market Survey & Field Audit',
   'Supervisory Inspection',
+  'Staff',
+  'Worker',
 ];
 
 const FIELD_FORCE_TYPES = [
@@ -94,6 +96,8 @@ const FIELD_FORCE_TYPES = [
   { value: 'Supervisor', label: 'Supervisor' },
   { value: 'Delivery Man', label: 'Delivery Man' },
   { value: 'Capture', label: 'Field Scout / Capture' },
+  { value: 'Permanent', label: 'Permanent' },
+  { value: 'Temporary', label: 'Temporary' },
 ];
 
 const APP_PERMISSIONS_LIST = [
