@@ -364,10 +364,34 @@ export const FieldForcePage: React.FC = () => {
     }
   };
 
+  const generateNextEmployeeCode = (): string => {
+    const existingCodes = new Set(
+      fieldForceReps
+        .map((r) => String(r.code || '').trim().toUpperCase())
+        .filter(Boolean)
+    );
+    let maxNum = 0;
+    existingCodes.forEach((code) => {
+      const match = code.match(/^EMP[-_]?(\d+)$/i);
+      if (match) {
+        const parsed = parseInt(match[1], 10);
+        if (Number.isFinite(parsed) && parsed > maxNum) {
+          maxNum = parsed;
+        }
+      }
+    });
+    let nextNum = maxNum + 1;
+    let candidate = `EMP${String(nextNum).padStart(6, '0')}`;
+    while (existingCodes.has(candidate)) {
+      nextNum += 1;
+      candidate = `EMP${String(nextNum).padStart(6, '0')}`;
+    }
+    return candidate;
+  };
+
   // Reset Add Form
   const resetForm = () => {
-    const nextNum = cleanFieldForceReps.length + 101;
-    setFormCode(`FF-${nextNum}`);
+    setFormCode(generateNextEmployeeCode());
     setFormPin('');
     setFormName('');
     setFormNativeName('');
@@ -1677,15 +1701,26 @@ export const FieldForcePage: React.FC = () => {
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                     {/* Code */}
                     <div>
-                      <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                        Officer Code<span className="text-red-500">*</span>
-                      </label>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                          Officer Code<span className="text-red-500">*</span>
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => setFormCode(generateNextEmployeeCode())}
+                          title="Auto-generate next EMP code"
+                          className="inline-flex items-center gap-1 text-[10px] font-semibold text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+                        >
+                          <RefreshCw className="w-2.5 h-2.5" />
+                          <span>Auto</span>
+                        </button>
+                      </div>
                       <input
                         type="text"
                         required
                         value={formCode}
                         onChange={(e) => setFormCode(e.target.value)}
-                        placeholder="e.g. FF-101"
+                        placeholder="e.g. EMP000001"
                         className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 font-mono font-bold text-slate-900 dark:text-white"
                       />
                     </div>
