@@ -761,7 +761,7 @@ interface ERPContextType {
   createOvertimeRequest: (req: Partial<OvertimeRequest>) => OvertimeRequest;
   updateOvertimeRequest: (id: string, updates: Partial<OvertimeRequest>) => void;
   deleteOvertimeRequest: (id: string) => void;
-  advanceOvertimeWorkflow: (id: string, step: 'SUPERVISOR' | 'PRODUCTION' | 'HR' | 'FINAL', remarks?: string) => void;
+  advanceOvertimeWorkflow: (id: string, step: 'SUPERVISOR' | 'PRODUCTION' | 'HR' | 'FINAL', remarks?: string, skipIntermediateSteps?: boolean) => void;
   rejectOvertimeRequest: (id: string, reason: string) => void;
   recordOvertimeAttendance: (att: Partial<OvertimeAttendance>) => OvertimeAttendance;
   verifyOvertimeAttendance: (id: string, verifiedActualHours?: number, remarks?: string) => void;
@@ -20401,7 +20401,8 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const advanceOvertimeWorkflow = (
     id: string,
     step: 'SUPERVISOR' | 'PRODUCTION' | 'HR' | 'FINAL',
-    remarks?: string
+    remarks?: string,
+    skipIntermediateSteps?: boolean
   ) => {
     const target = overtimeRequests.find((r) => r.id === id);
     if (!target) return;
@@ -20461,15 +20462,22 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       dbPatch.hr_verified_at = now;
       dbPatch.hr_remarks = updatedReq.hrRemarks;
     } else if (step === 'FINAL') {
+      const jumped = Boolean(skipIntermediateSteps) || prevStatus !== 'HR Verified';
       nextStatus = 'Final Approved';
-      actionDesc = 'Executive Final Approval (Step 4)';
+      actionDesc = jumped
+        ? 'Direct Final Approval (Skipped Steps 1–3)'
+        : 'Executive Final Approval (Step 4)';
       updatedReq = {
         ...updatedReq,
         status: nextStatus,
         finalApproverId: currentUser.id,
         finalApproverName: currentUser.name,
         finalApprovedAt: now,
-        finalRemarks: remarks || 'Final executive approval granted',
+        finalRemarks:
+          remarks ||
+          (jumped
+            ? 'Direct final approval granted (intermediate approval steps skipped)'
+            : 'Final executive approval granted'),
       };
       dbPatch.status = nextStatus;
       dbPatch.final_approver_id = currentUser.id;

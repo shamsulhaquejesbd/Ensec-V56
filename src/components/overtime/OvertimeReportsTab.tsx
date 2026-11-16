@@ -61,24 +61,26 @@ export const OvertimeReportsTab: React.FC = () => {
     XLSX.writeFile(wb, `${fileName}_${monthFilter || 'all'}.xlsx`);
   };
 
-  // Generate Report 1: Employee-wise
+  // Generate Report 1: Employee-wise (Final Approved OT requests only)
   const generateEmployeeReport = () => {
     const grouped: { [empId: string]: { code: string; name: string; dept: string; hours: number; amount: number; count: number } } = {};
-    filteredRequests.forEach(r => {
-      if (!grouped[r.employeeId]) {
-        grouped[r.employeeId] = {
-          code: r.employeeCode || r.employeeId,
-          name: r.employeeName,
-          dept: r.department,
-          hours: 0,
-          amount: 0,
-          count: 0
-        };
-      }
-      grouped[r.employeeId].hours += r.actualOvertimeHours || r.expectedHours || 0;
-      grouped[r.employeeId].amount += r.calculatedOvertimeAmountBDT || 0;
-      grouped[r.employeeId].count += 1;
-    });
+    filteredRequests
+      .filter((r) => r.status === 'Final Approved')
+      .forEach((r) => {
+        if (!grouped[r.employeeId]) {
+          grouped[r.employeeId] = {
+            code: r.employeeCode || r.employeeId,
+            name: r.employeeName,
+            dept: r.department,
+            hours: 0,
+            amount: 0,
+            count: 0
+          };
+        }
+        grouped[r.employeeId].hours += r.actualOvertimeHours || r.expectedHours || 0;
+        grouped[r.employeeId].amount += r.calculatedOvertimeAmountBDT || 0;
+        grouped[r.employeeId].count += 1;
+      });
 
     return Object.entries(grouped).map(([, val]) => ({
       'Employee ID': val.code,
