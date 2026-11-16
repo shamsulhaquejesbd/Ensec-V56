@@ -4038,6 +4038,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               taDaBDT: Number(row.ta_da_bdt) || 0,
               mobileAllowanceBDT: Number(row.mobile_allowance_bdt) || 0,
               photoUrl: row.photo_url || undefined,
+              gender: row.gender || undefined,
               employeeCategory: row.employee_category || 'Field Employee',
               employmentType: row.employment_type || 'Permanent',
               employmentStatus: row.employment_status || (row.is_active === false ? 'Inactive' : 'Active'),
@@ -15371,6 +15372,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         discontinue_date: newRep.discontinueDate || null,
         invoice_within_days: newRep.invoiceWithinDays,
         employee_category: newRep.employeeCategory,
+        gender: newRep.gender || null,
         employment_type: newRep.employmentType,
         employment_status: newRep.employmentStatus,
         present_address: newRep.presentAddress,
@@ -15503,6 +15505,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (updates.taDaBDT !== undefined) payload.ta_da_bdt = updates.taDaBDT;
       if (updates.mobileAllowanceBDT !== undefined) payload.mobile_allowance_bdt = updates.mobileAllowanceBDT;
       if (updates.photoUrl !== undefined) payload.photo_url = updates.photoUrl;
+      if (updates.gender !== undefined) payload.gender = updates.gender || null;
       if (updates.employeeCategory !== undefined) payload.employee_category = updates.employeeCategory;
       if (updates.employmentType !== undefined) payload.employment_type = updates.employmentType;
       if (updates.employmentStatus !== undefined) payload.employment_status = updates.employmentStatus;

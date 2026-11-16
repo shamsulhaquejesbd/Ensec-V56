@@ -225,6 +225,7 @@ export const FieldForcePage: React.FC = () => {
   const [formDiscontinueDate, setFormDiscontinueDate] = useState('');
   const [formFieldType, setFormFieldType] = useState('Order Booker');
   const [formActionType, setFormActionType] = useState('Primary Order Booking');
+  const [formGender, setFormGender] = useState('');
   const [formTadaApproverId, setFormTadaApproverId] = useState<string>('');
   const [formLinkedUserId, setFormLinkedUserId] = useState<string>('');
 
@@ -406,6 +407,7 @@ export const FieldForcePage: React.FC = () => {
     setFormDiscontinueDate('');
     setFormFieldType('Order Booker');
     setFormActionType('Primary Order Booking');
+    setFormGender('');
     setFormMarketHierarchy('');
     setMarketHierarchySearch('');
     setShowMarketDropdown(false);
@@ -488,6 +490,7 @@ export const FieldForcePage: React.FC = () => {
     setFormDiscontinueDate(rep.discontinueDate || '');
     setFormFieldType(rep.fieldForceType || 'Order Booker');
     setFormActionType(rep.actionType || 'Primary Order Booking');
+    setFormGender(rep.gender || '');
     setFormTadaApproverId(rep.tadaApproverId || '');
     
     // Overtime Policy fields from rep
@@ -629,6 +632,7 @@ export const FieldForcePage: React.FC = () => {
       departments: selectedDepartments,
       fieldForceType: formFieldType,
       actionType: formActionType,
+      gender: formGender || undefined,
       marketHierarchy: formMarketHierarchy,
       region: resolvedRegion,
       area: resolvedArea,
@@ -770,6 +774,7 @@ export const FieldForcePage: React.FC = () => {
       departments: selectedDepartments,
       fieldForceType: formFieldType,
       actionType: formActionType,
+      gender: formGender || undefined,
       marketHierarchy: formMarketHierarchy,
       region: resolvedRegion,
       area: resolvedArea,
@@ -1912,6 +1917,22 @@ export const FieldForcePage: React.FC = () => {
                         onChange={(e) => setInvoiceWithinDays(Number(e.target.value))}
                         className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-bold"
                       />
+                    </div>
+
+                    {/* Gender */}
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                        Gender
+                      </label>
+                      <select
+                        value={formGender}
+                        onChange={(e) => setFormGender(e.target.value)}
+                        className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-medium"
+                      >
+                        <option value="">Select Gender</option>
+                        <option value="Male">Male</option>
+                        <option value="Female">Female</option>
+                      </select>
                     </div>
                   </div>
                 </div>
@@ -3278,6 +3299,22 @@ export const FieldForcePage: React.FC = () => {
                         onChange={(e) => setInvoiceWithinDays(Number(e.target.value))}
                         className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-bold"
                       />
+                    </div>
+
+                    {/* Gender */}
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                        Gender
+                      </label>
+                      <select
+                        value={formGender}
+                        onChange={(e) => setFormGender(e.target.value)}
+                        className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-medium"
+                      >
+                        <option value="">Select Gender</option>
+                        <option value="Male">Male</option>
+                        <option value="Female">Female</option>
+                      </select>
                     </div>
                   </div>
                 </div>
