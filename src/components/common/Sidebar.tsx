@@ -225,7 +225,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             { id: 'basic-data-customers', label: 'Customer', icon: Contact2 },
             { id: 'basic-data-pricing-matrix', label: 'Customer Categories', icon: Tag },
             { id: 'basic-data-org-hierarchy', label: 'Org Hierarchy', icon: Network },
-            { id: 'basic-data-field-force', label: 'Field Force', icon: Users },
+            { id: 'basic-data-field-force', label: 'Employee', icon: Users },
             { id: 'basic-data-departments', label: 'Department', icon: Building2 },
             { id: 'basic-data-banks', label: 'Bank List', icon: Landmark },
             { id: 'basic-data-uom', label: 'Unit', icon: Ruler },

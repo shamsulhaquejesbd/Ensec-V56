@@ -236,11 +236,11 @@ export const ERP_PAGE_PERMISSIONS_REGISTRY: ERPModuleCategory[] = [
       },
       {
         id: 'basic-data-field-force',
-        name: 'Field Force & Sales Officers',
+        name: 'Employee',
         category: 'Master Data Hub',
-        description: 'Territory Sales Officers (TSO), Area Managers, and Field Staff.',
+        description: 'Employees, Territory Sales Officers (TSO), Area Managers, and Staff.',
         actions: [
-          { key: 'view', label: 'View Field Force', description: 'Can view field sales officers list and territories' },
+          { key: 'view', label: 'View Employee', description: 'Can view employee directory and assignments' },
           { key: 'create', label: 'Add Sales Officer', description: 'Can onboard new territory sales personnel' },
           { key: 'edit', label: 'Edit Sales Officer', description: 'Can update territory boundaries and supervisor' },
           { key: 'assign_target', label: 'Assign Sales Target', description: 'Can assign monthly and quarterly sales quotas' },

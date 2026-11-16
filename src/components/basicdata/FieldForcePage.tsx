@@ -938,11 +938,11 @@ export const FieldForcePage: React.FC = () => {
           <div className="flex items-center gap-2 text-xs font-semibold text-blue-600 dark:text-blue-400 mb-1">
             <span>Basic Data Master</span>
             <span>/</span>
-            <span className="text-slate-900 dark:text-white">Central Employee & Field Force Directory</span>
+            <span className="text-slate-900 dark:text-white">Employee</span>
           </div>
           <div className="flex items-center gap-2">
             <h1 className="text-xl font-bold text-slate-900 dark:text-white">
-              Employee & Field Force Master Directory
+              Employee Master Directory
             </h1>
           </div>
           
@@ -1217,10 +1217,10 @@ export const FieldForcePage: React.FC = () => {
         <div className="p-12 text-center rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xs">
           <Users className="w-12 h-12 mx-auto text-slate-300 dark:text-slate-600 mb-3" />
           <h3 className="font-bold text-slate-800 dark:text-slate-200 text-sm">
-            No Field Force Officers Found
+            No Employees Found
           </h3>
           <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
-            Try adjusting your search criteria or register a new field officer to this market hierarchy.
+            Try adjusting your search criteria or register a new employee.
           </p>
           <button
             onClick={() => {
@@ -4504,9 +4504,9 @@ export const FieldForcePage: React.FC = () => {
               <AlertCircle className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="font-bold text-sm text-slate-900 dark:text-white">Delete Field Officer?</h3>
+              <h3 className="font-bold text-sm text-slate-900 dark:text-white">Delete Employee?</h3>
               <p className="text-xs text-slate-500 mt-1">
-                Are you sure you want to remove <b>{repToDelete.name}</b> ({repToDelete.code}) from the Field Force Directory?
+                Are you sure you want to remove <b>{repToDelete.name}</b> ({repToDelete.code}) from the Employee Directory?
               </p>
             </div>
             <div className="flex items-center justify-end gap-2 pt-2">
